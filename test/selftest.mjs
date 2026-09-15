@@ -32,7 +32,7 @@ import {
 import { run } from '../lib/exec.mjs';
 import { displaysFromProfiler } from '../lib/displays.mjs';
 import { formatBurstOutput, imageContent } from '../lib/image.mjs';
-import { pngDimensions } from '../lib/png.mjs';
+import { pngDimensions, stripDescriptiveChunks } from '../lib/png.mjs';
 import {
   DENIED,
   OTHER,
@@ -368,9 +368,16 @@ await test('reports the downscale multiplier when the store resized', () => {
 
 process.stdout.write('\nPNG header\n');
 
-/** A PNG header for the given size: signature, IHDR length, IHDR, width, height. */
+/**
+ * A complete IHDR chunk for the given size: signature, then the chunk's length,
+ * type, 13 bytes of header data and CRC.
+ *
+ * The full chunk rather than just its first 24 bytes, because the chunk walker
+ * steps by length and a short fixture would send it out of alignment — which is
+ * exactly what it did before this was fixed.
+ */
 function pngHeader(width, height, chunk = 'IHDR') {
-  const header = Buffer.alloc(24);
+  const header = Buffer.alloc(33);
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0);
   header.writeUInt32BE(13, 8);
   header.write(chunk, 12, 'latin1');
@@ -554,6 +561,107 @@ await test('the inventory mode refuses capture arguments', () => {
     assert.throws(() => planCapture(args), /captures nothing/u, JSON.stringify(args));
   }
   assert.equal(planCapture({ mode: 'displays' }).mode, 'displays');
+});
+
+process.stdout.write('\nduration and lossless storage\n');
+
+await test('sizes a burst from how long the motion lasts', () => {
+  // The point of duration_ms: a caller states the window and the tool spends it
+  // on as many frames as fit, so a 300ms animation and a 2s motion are both
+  // expressible without knowing what a capture costs.
+  const short = planCapture({ duration_ms: 300 });
+  assert.equal(short.frames, 7);
+  assert.equal(short.intervalMs, 50);
+  assert.equal(short.frames * 1 > 0 && (short.frames - 1) * short.intervalMs <= 300, true);
+
+  const long = planCapture({ duration_ms: 2000 });
+  assert.equal(long.frames, MAX_BURST_FRAMES, 'a long window spends the whole frame budget');
+  assert.equal(long.intervalMs, 222);
+  assert.ok((long.frames - 1) * long.intervalMs >= 1900, 'the window must actually be covered');
+
+  // A window shorter than one capture still yields two frames, because one is
+  // not a burst and the achieved spacing is reported rather than pretended.
+  const tiny = planCapture({ duration_ms: 40 });
+  assert.equal(tiny.frames, 2);
+  assert.equal(tiny.durationMs, 40);
+});
+
+await test('refuses to mix duration_ms with the explicit knobs', () => {
+  // A caller who set both has a belief about which wins; saying so beats
+  // guessing, and the two agree in no case worth guessing about.
+  assert.throws(() => planCapture({ duration_ms: 1000, frames: 4 }), /not both/u);
+  assert.throws(() => planCapture({ duration_ms: 1000, interval_ms: 100 }), /not both/u);
+  assert.throws(() => planCapture({ duration_ms: 0 }), /positive integer/u);
+  assert.throws(() => planCapture({ duration_ms: 1.5 }), /positive integer/u);
+});
+
+await test('reports the window covered when one was asked for', () => {
+  const frame = (n) => ({
+    path: `/tmp/f${n}.png`,
+    capturedAt: 'now',
+    image: { attachmentId: `i${n}`, mediaType: 'image/png', bytes: 1, width: 10, height: 10 },
+  });
+  const text = formatBurstOutput({
+    mode: 'region', capturedAt: 'now', frames: [frame(1), frame(2), frame(3)],
+    spacingMs: 222, intervalMs: 222, durationMs: 2000,
+  });
+  assert.match(text, /spanning about 444ms of the 2000ms asked for/u);
+});
+
+await test('strips the chunks that would force a lossy re-encode', () => {
+  // macOS attaches an ICC profile, EXIF and iTXt to every capture, and the
+  // store's pass-through test refuses anything carrying metadata — so a real
+  // screenshot is always re-encoded, however small. Removing those chunks is
+  // what lets the same pixels through untouched.
+  const chunk = (type, payload) => {
+    const out = Buffer.alloc(12 + payload.length);
+    out.writeUInt32BE(payload.length, 0);
+    out.write(type, 4, 'latin1');
+    payload.copy(out, 8);
+    return out;
+  };
+  const withMetadata = Buffer.concat([
+    pngHeader(600, 400),
+    chunk('iCCP', Buffer.alloc(10)),
+    chunk('eXIf', Buffer.alloc(4)),
+    chunk('iTXt', Buffer.alloc(7)),
+    chunk('IDAT', Buffer.from('image data')),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+
+  const stripped = stripDescriptiveChunks(withMetadata);
+  const types = [];
+  let offset = 8;
+  while (offset + 12 <= stripped.length) {
+    const length = stripped.readUInt32BE(offset);
+    const type = stripped.subarray(offset + 4, offset + 8).toString('latin1');
+    types.push(type);
+    offset += 12 + length;
+    if (type === 'IEND') break;
+  }
+  assert.deepEqual(types, ['IHDR', 'IDAT', 'IEND'], 'only the image data should remain');
+  assert.deepEqual(pngDimensions(stripped), { width: 600, height: 400 });
+});
+
+await test('leaves bytes it cannot safely rewrite exactly as they were', () => {
+  const notPng = Buffer.alloc(32, 0x78);
+  assert.equal(stripDescriptiveChunks(notPng), notPng, 'a non-PNG must be returned unchanged');
+  assert.equal(stripDescriptiveChunks('a string'), 'a string');
+
+  // A file that never reaches IEND is left alone rather than truncated into
+  // something corrupt — a half-rewritten PNG would fail later, less clearly.
+  const unterminated = Buffer.concat([
+    pngHeader(10, 10),
+    (() => {
+      const payload = Buffer.from('data');
+      const out = Buffer.alloc(12 + payload.length);
+      out.writeUInt32BE(payload.length, 0);
+      out.write('IDAT', 4, 'latin1');
+      payload.copy(out, 8);
+      return out;
+    })(),
+  ]);
+  assert.equal(stripDescriptiveChunks(unterminated), unterminated);
 });
 
 process.stdout.write('\nchild process execution\n');

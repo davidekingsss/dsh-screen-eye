@@ -88,7 +88,33 @@ machine, five runs each:
 Roughly two thirds of the cost is process startup and one third is encoding,
 which is why the curve flattens: the floor is about 45ms whatever the area.
 
-The consequence is the useful part. A short animation — a few hundred
+These are **main-display figures**, measured through the HDMI path on a 4K
+monitor. A second screen can differ: an iPad in Sidecar took 189ms for a full
+capture of 2388x1668, slower than the larger 3840x2160 main screen at 169ms,
+because the transport is not the same. Region captures were within a
+millisecond of each other on both.
+
+## Stating a window instead of a rate
+
+`frames` and `interval_ms` are the explicit controls, but they put the
+arithmetic on the caller, and the arithmetic is the easy part to get wrong: the
+frames span `(frames - 1) x interval_ms` of real time, so the default six at
+200ms cover about one second — right for a second-long process, wrong for a
+300ms animation and equally wrong for a two-second one.
+
+`duration_ms` states the window instead and lets the tool spend it: as many
+frames as fit, up to the cap, with the interval dividing the window evenly. It
+is exclusive with the other two rather than overriding them, because a caller
+who set both has a belief about which wins.
+
+That also defines the reachable range. The lower bound is the capture cost: ten
+frames at the 47ms floor spans about 0.4s, and no request can resolve motion
+shorter than that. The upper bound is only the interval, so ten frames a second
+apart spans nine seconds and ten frames ten seconds apart spans a minute and a
+half. Between those, any window is expressible — the constraint is sampling
+*resolution*, not duration.
+
+The consequence below is the useful part for resolution. A short animation — a few hundred
 milliseconds — is not resolved by asking for a finer interval over the whole
 screen, because that cannot be met. It is resolved by **capturing the small
 region it happens in**, where the floor is three times lower. The envelope

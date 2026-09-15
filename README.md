@@ -119,10 +119,19 @@ All keys are optional.
 | `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
 | `timeoutMs` | `120000` | Cooperative budget for one capture. |
 | `frames` / `interval_ms` | `1` / `200` | Frames per call and the target gap between them. At most 10 frames, because they share the harness's per-message image budget. |
+| `duration_ms` | — | State how long the motion lasts and let the tool size the burst, instead of computing frames and interval yourself. Exclusive with the two above. |
 | `maxDimension` | `8192` | Largest side, in pixels, a capture may have. The provider caps an image side at 8192 (4096 once a request carries fifteen or more images) and the attachment store caps it at 8192 as well; a single display never reaches either. A capture over the cap is refused with its size named. |
 | `keepRecent` | `50` | How many of the newest captures to keep in `outputDir`. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. `0` keeps everything. |
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |
 | `deleteAfterCommit` | `false` | Delete the PNG once it is committed to the attachment store. Off by default, so the returned path stays re-readable. |
+
+Captures are committed **without** the ICC profile, EXIF and iTXt records macOS
+attaches to every screenshot, while the file on disk keeps them. Those records
+are what decide whether the attachment store keeps the bytes or re-encodes
+them — carrying metadata disqualifies an image from pass-through — so removing
+them is what lets a capture reach the model losslessly instead of as WebP at
+quality 85. The store converts to sRGB either way, so nothing that survives is
+lost. The file you can open keeps its colour profile.
 
 Retention only ever removes files **this plugin wrote**: regular files, direct
 children of `outputDir`, whose names match the exact shape it generates

@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-75 cases, all passing. They run without a harness: the logic modules are
+80 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -37,6 +37,14 @@ What they cover:
   are applied on different paths and a silent drift would make behaviour
   depend on how the plugin loaded;
 - the image content blocks, including the downscale multiplier;
+- `duration_ms`: that a 300ms window becomes seven frames and a two-second
+  window spends the whole budget, that a window shorter than one capture still
+  yields two frames, that mixing it with the explicit knobs is refused rather
+  than resolved, and that the reply names the window it covered;
+- metadata stripping: that a capture's descriptive chunks are removed and its
+  dimensions survive, and that bytes the rewriter cannot handle safely — a
+  non-PNG, or a PNG that never reaches `IEND` — come back exactly as they were
+  rather than truncated into something corrupt;
 - display ordering as a pure function, on the exact payload a real machine
   produced: main first even when the system lists it later, a Sidecar entry
   that omits `spdisplays_online` staying listed rather than being read as
