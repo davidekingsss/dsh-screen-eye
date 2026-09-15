@@ -106,18 +106,37 @@ await test('rejects an unknown mode', () => {
 });
 
 await test('rejects malformed regions instead of repairing them', () => {
-  for (const region of ['0,0,800', 'a,b,c,d', '0,0,800,-1', '0, 0, 800, 600', '', '0,0,800,600,1']) {
+  for (const region of ['0,0,800', 'a,b,c,d', '0, 0, 800, 600', '', '0,0,800,600,1', '0,0,800,', ',0,800,600']) {
     assert.throws(
       () => planCapture({ mode: 'region', region }),
       /region/u,
       `expected ${JSON.stringify(region)} to be rejected`,
     );
   }
+  // A rectangle needs a positive size; the origin is the part that may be
+  // negative, so these are the cases where a sign must not be waved through.
+  for (const region of ['0,0,0,600', '0,0,800,0', '0,0,-800,600']) {
+    assert.throws(() => planCapture({ mode: 'region', region }), /region/u);
+  }
+});
+
+await test('accepts a negative region origin for a display left of the main one', () => {
+  // screencapture takes negative coordinates; they are how a monitor placed to
+  // the left of or above the main one is addressed, and rejecting them would
+  // put those displays out of reach.
+  assert.equal(planCapture({ mode: 'region', region: '-1920,0,800,600' }).region, '-1920,0,800,600');
+  assert.equal(planCapture({ mode: 'region', region: '0,-1080,800,600' }).region, '0,-1080,800,600');
+  assert.equal(planCapture({ mode: 'region', region: ' 10,20,300,400 ' }).region, '10,20,300,400');
 });
 
 await test('requires region exactly when the mode is region', () => {
-  assert.throws(() => planCapture({ mode: 'region' }), /requires region/u);
+  assert.throws(() => planCapture({ mode: 'region' }), /region/u);
   assert.throws(() => planCapture({ mode: 'screen', region: '0,0,10,10' }), /only meaningful/u);
+});
+
+await test('requires display exactly when the mode is display', () => {
+  assert.throws(() => planCapture({ mode: 'screen', display: 2 }), /only meaningful/u);
+  assert.equal(planCapture({ mode: 'display', display: 2 }).display, 2);
 });
 
 await test('rejects non-positive and fractional display indexes', () => {
@@ -138,12 +157,15 @@ await test('maps each mode onto screencapture flags', () => {
   const out = '/tmp/x.png';
   const argv = (args) => screencaptureArgs(planCapture(args), out);
 
-  assert.deepEqual(argv({}), ['-x', '-t', 'png', out]);
+  // `-m` is what keeps one call to one file: screencapture otherwise writes
+  // "1 file per screen", and this pipeline resolves and reads a single path.
+  assert.deepEqual(argv({}), ['-x', '-t', 'png', '-m', out]);
   assert.deepEqual(argv({ mode: 'display', display: 3 }), ['-x', '-t', 'png', '-D', '3', out]);
   assert.deepEqual(argv({ mode: 'region', region: '1,2,3,4' }), ['-x', '-t', 'png', '-R', '1,2,3,4', out]);
+  assert.deepEqual(argv({ mode: 'region', region: '-1920,0,3,4' }), ['-x', '-t', 'png', '-R', '-1920,0,3,4', out]);
   assert.deepEqual(argv({ mode: 'window' }), ['-x', '-t', 'png', '-o', '-w', out]);
   assert.deepEqual(argv({ mode: 'select' }), ['-x', '-t', 'png', '-i', out]);
-  assert.deepEqual(argv({ include_cursor: true }), ['-x', '-t', 'png', '-C', out]);
+  assert.deepEqual(argv({ include_cursor: true }), ['-x', '-t', 'png', '-C', '-m', out]);
 });
 
 await test('always writes PNG so the declared media type is true', () => {

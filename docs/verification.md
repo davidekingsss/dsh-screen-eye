@@ -7,16 +7,21 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-37 cases, all passing. They run without a harness: the logic modules are
+39 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
 What they cover:
 
 - argument validation, including the cases that must be **rejected** rather
-  than repaired — malformed regions, a region passed to a non-region mode, a
-  zero or fractional display index;
-- the mapping from each mode onto `screencapture` flags, and that every mode
+  than repaired — malformed regions, a zero or negative region size, a region
+  passed to a non-region mode, a display passed to a non-display mode, a zero
+  or fractional display index;
+- that a **negative region origin is accepted**, because that is how a display
+  placed to the left of or above the main one is addressed, and rejecting it
+  would put those displays out of reach;
+- the mapping from each mode onto `screencapture` flags — including `-m` on the
+  default mode, which is what keeps one call to one file — and that every mode
   produces PNG so the declared media type is true;
 - output-path rules: absolute and `.png` only, and 200 generated names are
   distinct (two captures in the same second must not overwrite each other);
@@ -98,6 +103,14 @@ the gate and is covered by a self-test rather than by a live run).
 
 ## 4. What was reasoned about but not executed
 
+- **Multi-display behaviour.** The machine this was developed on has one
+  display, so no multi-display case was ever run. What was done instead:
+  `screencapture`'s manual was read rather than assumed, and it says the output
+  argument takes *one file per screen* — which is why the default mode now
+  passes `-m` and is documented as the main display, so that one call cannot
+  produce files this pipeline does not resolve and read. Negative region
+  coordinates were verified to be *accepted* by the binary, but a region that
+  actually intersects a second display could not be captured here.
 - **Windows.** No capture engine is shipped, so nothing about Windows was run.
   [`windows.md`](windows.md) records the assessment, including the parts of it
   that are hypotheses rather than findings.
@@ -108,3 +121,5 @@ the gate and is covered by a self-test rather than by a live run).
 - **Retention over a long run.** The rule and its file-level behaviour are
   tested; that the default cap of 50 is the right number is a judgement, not a
   measurement.
+- **`window` and `select`.** Interactive by design, so no automated case can
+  complete them; the flag mapping is asserted and nothing more is claimed.

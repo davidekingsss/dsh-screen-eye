@@ -15,9 +15,18 @@ Two model-callable tools:
 | `screenshot` | Captures the screen and returns the image itself, as an `image` content block the model can see. |
 | `screen_permission` | Reports whether macOS currently allows this process to capture, and opens the exact System Settings pane when it does not. |
 
-`mode` selects what is captured: `screen` (default, whole desktop), `display`
-(one display), `region` (a rectangle), or the interactive `window` / `select`,
-which wait for the user to click a window or drag a rectangle.
+`mode` selects what is captured: `screen` (default, the main display), `display`
+(one display, by index), `region` (a rectangle, whose origin may be negative so
+a monitor placed to the left of or above the main one is reachable), or the
+interactive `window` / `select`, which wait for the user to click a window or
+drag a rectangle.
+
+Every call returns **exactly one image**. That is a deliberate constraint rather
+than a limitation of the system: `screencapture` writes *one file per screen*,
+so an unqualified capture on a multi-display Mac would produce several files
+while this pipeline resolves and reads a single path — leaving the others behind
+under names nothing here chose. The default is therefore pinned to one display,
+and `display` selects another.
 
 ## Why this plugin exists
 
