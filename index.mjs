@@ -56,6 +56,12 @@ export const Config = z.object({
     .description(
       'How many of the newest captures to keep in outputDir. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. Only files this plugin wrote are ever removed. Set to 0 to keep everything.',
     ),
+  maxDimension: z
+    .natural()
+    .default(8192)
+    .description(
+      'Largest side, in pixels, a capture may have. The provider caps a side at 8192 (4096 when a request carries fifteen or more images) and the attachment store caps it at 8192 too; a single display never reaches either. A capture over the cap is refused with its size named, not silently resized.',
+    ),
   requireImageCapableModel: z
     .boolean()
     .default(true)

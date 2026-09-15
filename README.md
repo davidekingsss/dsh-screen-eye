@@ -104,6 +104,7 @@ All keys are optional.
 | `outputDir` | `<DSH home>/screen-eye` | Where captured PNGs are written. |
 | `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
 | `timeoutMs` | `120000` | Cooperative budget for one capture. |
+| `maxDimension` | `8192` | Largest side, in pixels, a capture may have. The provider caps an image side at 8192 (4096 once a request carries fifteen or more images) and the attachment store caps it at 8192 as well; a single display never reaches either. A capture over the cap is refused with its size named. |
 | `keepRecent` | `50` | How many of the newest captures to keep in `outputDir`. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. `0` keeps everything. |
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |
 | `deleteAfterCommit` | `false` | Delete the PNG once it is committed to the attachment store. Off by default, so the returned path stays re-readable. |
@@ -131,6 +132,15 @@ screenshot tool ──▶ lib/capture.mjs ──▶ /usr/sbin/screencapture ─�
                        │
                        └──▶ attachments.saveImage() ──▶ image content block ──▶ model
 ```
+
+Captures are **not** resized to fit `maxDimension`, and the cap is deliberately
+not set lower. Both choices come from the same measurement: the harness projects
+every image to a route-level pixel budget before the model sees it — 640,000
+pixels by default, about 1066x600 for a 16:9 screen — so a capture from a 4K, 5K,
+6K or 8K display arrives as the *same* image. Below that budget a smaller cap
+cannot save a token, and resizing here would insert one more scale between what
+the model measures in the image and the screen coordinates `region` expects,
+which is the mapping the zoom workflow depends on.
 
 The capture shells out to the system `screencapture(1)` rather than shipping a
 private helper. That choice is deliberate: `screencapture` needs no compiled

@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-57 cases, all passing. They run without a harness: the logic modules are
+62 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -37,6 +37,11 @@ What they cover:
   are applied on different paths and a silent drift would make behaviour
   depend on how the plugin loaded;
 - the image content blocks, including the downscale multiplier;
+- PNG geometry read straight from the file header — a real size, a buffer too
+  short to hold one, a right-sized buffer that is not a PNG, a PNG whose first
+  chunk is not `IHDR`, and a zero dimension — plus the `maxDimension` guard
+  firing at a deliberately lowered cap and naming the real size, the cap and
+  the remedy, and a capture that fits passing through;
 - child-process execution, which is what makes the cancellation claim in
   `lib/exec.mjs` true rather than aspirational: an already-aborted call never
   spawns, cancelling mid-flight and exceeding the budget both **kill** the child

@@ -90,6 +90,7 @@ dsh plugin --profile web add link:/path/to/dsh-screen-eye
 | `outputDir` | `<DSH home>/screen-eye` | 截图 PNG 的落盘目录。 |
 | `locale` | `en` | 引导文案语言：`en` 或 `zh`。 |
 | `timeoutMs` | `120000` | 单次截图的协作式时间预算。 |
+| `maxDimension` | `8192` | 截图允许的最大单边像素。provider 对图片单边上限为 8192（单请求含 15 张及以上图片时降为 4096），附件存储同样限制单边 8192；单块显示器都到不了。超限的截图会被拒绝，并在消息里报出真实尺寸。 |
 | `keepRecent` | `50` | `outputDir` 里保留的最新截图数量。一张截图是几 MB 的 PNG，而用眼睛的 agent 会截很多张，所以这个目录默认是有上限的。设为 `0` 表示全部保留。 |
 | `requireImageCapableModel` | `true` | 当调用方模型未声明图片输入时直接拒绝，而不是返回一张它看不见的图。 |
 | `deleteAfterCommit` | `false` | 提交到附件存储后删除 PNG。默认关闭，以便返回的路径可再次读取。 |
@@ -116,6 +117,12 @@ screenshot 工具 ──▶ lib/capture.mjs ──▶ /usr/sbin/screencapture �
                        │
                        └──▶ attachments.saveImage() ──▶ image 内容块 ──▶ 模型
 ```
+
+截图**不会**被缩放到 `maxDimension` 以内，这个上限也刻意没有设得更低，两者出自同一个实测：
+harness 在模型看到图片之前，会先按路由的像素预算投影——默认 640,000 像素，16:9 屏幕约
+1066×600——所以 4K、5K、6K、8K 显示器截出来的图，**到达模型时是同一张**。在这个预算之下，
+把上限调小省不下一个 token；而在这里做缩放，会在"模型在图上量到的位置"与"`region` 需要的
+屏幕坐标"之间**再多插一级缩放**，而那正是放大工作流所依赖的映射。
 
 截图走系统自带的 `screencapture(1)`，而不是自带一个私有辅助二进制。这是刻意的
 取舍：`screencapture` 不需要任何编译产物、由 Apple 签名，并且在当前 macOS 上

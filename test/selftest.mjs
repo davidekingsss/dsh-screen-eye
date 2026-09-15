@@ -29,6 +29,7 @@ import {
 } from '../lib/capture.mjs';
 import { run } from '../lib/exec.mjs';
 import { imageContent } from '../lib/image.mjs';
+import { pngDimensions } from '../lib/png.mjs';
 import {
   DENIED,
   OTHER,
@@ -303,7 +304,7 @@ await test('the schemastery defaults agree with the module fallbacks', () => {
   // drift between them would make behaviour depend on how the plugin loaded.
   const fromSchema = Config({});
   const fromModule = resolveSettings({});
-  for (const key of ['locale', 'timeoutMs', 'keepRecent', 'requireImageCapableModel', 'deleteAfterCommit']) {
+  for (const key of ['locale', 'timeoutMs', 'keepRecent', 'maxDimension', 'requireImageCapableModel', 'deleteAfterCommit']) {
     assert.deepEqual(fromSchema[key], fromModule[key], `default for "${key}" drifted`);
   }
   // outputDir depends on DSH_HOME, so it is resolved at runtime, not in schema.
@@ -350,6 +351,41 @@ await test('reports the downscale multiplier when the store resized', () => {
     },
   });
   assert.match(text.text, /multiply coordinates by 2\.00/u);
+});
+
+process.stdout.write('\nPNG header\n');
+
+/** A PNG header for the given size: signature, IHDR length, IHDR, width, height. */
+function pngHeader(width, height, chunk = 'IHDR') {
+  const header = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0);
+  header.writeUInt32BE(13, 8);
+  header.write(chunk, 12, 'latin1');
+  header.writeUInt32BE(width, 16);
+  header.writeUInt32BE(height, 20);
+  return header;
+}
+
+await test('reads a PNG size from the header alone', () => {
+  // The header, not a decode: a full-screen PNG is megabytes and the check
+  // must not cost anything.
+  assert.deepEqual(pngDimensions(pngHeader(3840, 2160)), { width: 3840, height: 2160 });
+  assert.deepEqual(pngDimensions(pngHeader(1, 1)), { width: 1, height: 1 });
+});
+
+await test('rejects bytes that are not a PNG', () => {
+  // Long enough to reach the signature check — a shorter buffer is rejected
+  // for its length, which would make this case pass for the wrong reason.
+  assert.throws(() => pngDimensions(Buffer.alloc(32, 0x78)), /signature/u);
+  assert.throws(() => pngDimensions(Buffer.alloc(8)), /fewer than 24 bytes/u);
+  assert.throws(() => pngDimensions(Buffer.alloc(0)), /fewer than 24 bytes/u);
+  assert.throws(() => pngDimensions('a string, not bytes'), /fewer than 24 bytes/u);
+  assert.throws(() => pngDimensions(pngHeader(10, 10, 'IDAT')), /IHDR/u);
+});
+
+await test('rejects a zero dimension instead of reporting it', () => {
+  assert.throws(() => pngDimensions(pngHeader(0, 100)), /malformed PNG/u);
+  assert.throws(() => pngDimensions(pngHeader(100, 0)), /malformed PNG/u);
 });
 
 process.stdout.write('\nchild process execution\n');
@@ -686,6 +722,33 @@ if (!probe.authorized) {
     } finally {
       await rm(elsewhere, { recursive: true, force: true });
     }
+  });
+
+  await test('refuses a capture whose longest side exceeds the maximum', async () => {
+    // The guard has to be exercised or it is not a guard: the default cap is
+    // unreachable on current hardware, so the case lowers it deliberately and
+    // checks that the refusal names the real size, the cap, and the remedy.
+    const tool = screenshotTool(
+      stubCtx({ attachments: stubAttachments() }),
+      resolveSettings({ ...liveSettings, maxDimension: 16 }),
+    );
+    await assert.rejects(
+      () => tool.execute({ mode: 'region', region: '0,0,64,48' }, stubExec()),
+      (error) => {
+        assert.match(error.message, /64x48/u);
+        assert.match(error.message, /16px limit/u);
+        assert.match(error.message, /8192/u, 'the message must explain where the provider cap is');
+        assert.match(error.message, /capture a region or a single display/u);
+        return true;
+      },
+    );
+  });
+
+  await test('accepts a capture that fits the maximum', async () => {
+    const settings = resolveSettings({ ...liveSettings, maxDimension: 4096 });
+    const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), settings);
+    const value = await tool.execute({ mode: 'region', region: '0,0,64,48' }, stubExec());
+    assert.equal(value.mode, 'region');
   });
 
   await test('reports a non-zero exit instead of writing an empty file', async () => {
