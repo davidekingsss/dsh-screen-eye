@@ -21,6 +21,7 @@ import { buildCaptureName, captureStamp, isCaptureName } from '../lib/capture-na
 import {
   CAPTURE_MODES,
   CaptureError,
+  DEFAULT_BURST_FRAMES,
   DEFAULT_BURST_INTERVAL_MS,
   INTERACTIVE_MODES,
   MAX_BURST_FRAMES,
@@ -30,6 +31,8 @@ import {
   screencaptureArgs,
 } from '../lib/capture.mjs';
 import { run } from '../lib/exec.mjs';
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
+
 import { displaysFromProfiler } from '../lib/displays.mjs';
 import { formatBurstOutput, imageContent } from '../lib/image.mjs';
 import { pngDimensions, stripDescriptiveChunks } from '../lib/png.mjs';
@@ -565,34 +568,52 @@ await test('the inventory mode refuses capture arguments', () => {
 
 process.stdout.write('\nduration and lossless storage\n');
 
-await test('sizes a burst from how long the motion lasts', () => {
-  // The point of duration_ms: a caller states the window and the tool spends it
-  // on as many frames as fit, so a 300ms animation and a 2s motion are both
-  // expressible without knowing what a capture costs.
-  const short = planCapture({ duration_ms: 300 });
-  assert.equal(short.frames, 7);
-  assert.equal(short.intervalMs, 50);
-  assert.equal(short.frames * 1 > 0 && (short.frames - 1) * short.intervalMs <= 300, true);
+await test('every pair of the three burst numbers determines the third', () => {
+  // The contract in one case: frames, interval and window, any two of which
+  // settle the third. The pair that matters most is the second — a fixed window
+  // sampled at a chosen coarseness, which is how cost is controlled.
+  const byFramesAndInterval = planCapture({ frames: 6, interval_ms: 200 });
+  assert.equal(byFramesAndInterval.frames, 6);
+  assert.equal(byFramesAndInterval.intervalMs, 200);
 
-  const long = planCapture({ duration_ms: 2000 });
-  assert.equal(long.frames, MAX_BURST_FRAMES, 'a long window spends the whole frame budget');
-  assert.equal(long.intervalMs, 222);
-  assert.ok((long.frames - 1) * long.intervalMs >= 1900, 'the window must actually be covered');
+  const byFramesAndDuration = planCapture({ duration_ms: 2000, frames: 4 });
+  assert.equal(byFramesAndDuration.frames, 4);
+  assert.equal(byFramesAndDuration.intervalMs, 667, 'the interval is what divides the window');
+  assert.ok((byFramesAndDuration.frames - 1) * byFramesAndDuration.intervalMs >= 1900);
 
-  // A window shorter than one capture still yields two frames, because one is
-  // not a burst and the achieved spacing is reported rather than pretended.
-  const tiny = planCapture({ duration_ms: 40 });
-  assert.equal(tiny.frames, 2);
-  assert.equal(tiny.durationMs, 40);
+  const byIntervalAndDuration = planCapture({ duration_ms: 400, interval_ms: 50 });
+  assert.equal(byIntervalAndDuration.frames, 9);
+  assert.equal(byIntervalAndDuration.intervalMs, 50);
+
+  // A window alone is sampled at the ordinary frame count, not at the maximum:
+  // the maximum is the most expensive answer and was not asked for.
+  const byDuration = planCapture({ duration_ms: 300 });
+  assert.equal(byDuration.frames, DEFAULT_BURST_FRAMES);
+  assert.equal(byDuration.intervalMs, 60);
 });
 
-await test('refuses to mix duration_ms with the explicit knobs', () => {
-  // A caller who set both has a belief about which wins; saying so beats
-  // guessing, and the two agree in no case worth guessing about.
-  assert.throws(() => planCapture({ duration_ms: 1000, frames: 4 }), /not both/u);
-  assert.throws(() => planCapture({ duration_ms: 1000, interval_ms: 100 }), /not both/u);
+await test('raising the interval lowers the frame count, which is the cost lever', () => {
+  // Why the interval is exposed at all: within one window, a coarser sample is
+  // fewer images, and images are what cost. Holding the window fixed and raising
+  // the interval must only ever reduce the frame count.
+  const counts = [50, 100, 200, 400, 1000].map(
+    (interval_ms) => planCapture({ duration_ms: 2000, interval_ms }).frames,
+  );
+  assert.deepEqual(counts, [MAX_BURST_FRAMES, MAX_BURST_FRAMES, MAX_BURST_FRAMES, 6, 3]);
+  for (let index = 1; index < counts.length; index += 1) {
+    assert.ok(
+      counts[index] <= counts[index - 1],
+      `frame count rose from ${counts[index - 1]} to ${counts[index]} as the interval grew`,
+    );
+  }
+});
+
+await test('refuses to over-determine the burst', () => {
+  // All three at once is the one combination with no defensible reading.
+  assert.throws(() => planCapture({ frames: 4, interval_ms: 100, duration_ms: 1000 }), /over-determine/u);
   assert.throws(() => planCapture({ duration_ms: 0 }), /positive integer/u);
   assert.throws(() => planCapture({ duration_ms: 1.5 }), /positive integer/u);
+  assert.throws(() => planCapture({ duration_ms: 1000, frames: 1 }), /at least two frames/u);
 });
 
 await test('reports the window covered when one was asked for', () => {
@@ -662,6 +683,82 @@ await test('leaves bytes it cannot safely rewrite exactly as they were', () => {
     })(),
   ]);
   assert.equal(stripDescriptiveChunks(unterminated), unterminated);
+});
+
+process.stdout.write('\nschema conformance\n');
+
+/**
+ * The schema the harness will hold a tool's returned value to.
+ *
+ * `defineTool` compiles the author-facing spec while building the definition,
+ * so `output.schema` is already raw JSON Schema — compiling it again would
+ * feed the DSL its own output and be rejected.
+ * @param tool - a tool definition.
+ * @returns the compiled JSON Schema.
+ */
+function compiledOutput(tool) {
+  return tool.output.schema;
+}
+
+/** One stored attachment, as the serialisable image value carries it. */
+const SAMPLE_IMAGE = Object.freeze({
+  attachmentId: 'attachment-id', mediaType: 'image/png', bytes: 1024, width: 10, height: 10,
+});
+
+await test('every shape the screenshot tool returns satisfies its own schema', () => {
+  // The harness validates each returned value against the schema the tool
+  // declared and refuses the result when it does not fit, so a mismatch turns a
+  // working tool into one that reports "returned invalid output" at runtime.
+  // That is exactly what happened when the inventory mode was added while the
+  // declaration still required an image: only a live call revealed it. Compiling
+  // the declaration and checking every shape here makes it fail in CI instead.
+  const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+  const schema = compiledOutput(tool);
+
+  const shapes = {
+    'one capture': {
+      path: '/tmp/a.png', mode: 'screen', capturedAt: 'now', display: 1, image: SAMPLE_IMAGE,
+    },
+    'a burst': {
+      path: '/tmp/a.png', mode: 'region', capturedAt: 'now',
+      frames: [{ path: '/tmp/a.png', capturedAt: 'now', image: SAMPLE_IMAGE }],
+      spacingMs: 200, intervalMs: 200, durationMs: 1000,
+    },
+    'a burst that under-delivered': {
+      path: '/tmp/a.png', mode: 'screen', capturedAt: 'now',
+      frames: [{ path: '/tmp/a.png', capturedAt: 'now', image: SAMPLE_IMAGE }],
+      spacingMs: 155, intervalMs: 40,
+    },
+    'a display inventory': {
+      mode: 'displays',
+      displays: [{ index: 1, name: 'Main', width: 3840, height: 2160, main: true }],
+    },
+    'an inventory that could not read a size': { mode: 'displays', displays: [{ index: 2, name: 'Sidecar' }] },
+  };
+
+  for (const [name, value] of Object.entries(shapes)) {
+    const problems = validateJsonSchemaValue(schema, value);
+    assert.deepEqual(problems, [], `${name} does not satisfy the declared schema: ${problems.join('; ')}`);
+  }
+});
+
+await test('every shape the permission tool returns satisfies its own schema', () => {
+  const tool = screenPermissionTool(resolveSettings({}));
+  const schema = compiledOutput(tool);
+  const shapes = {
+    granted: { platform: 'darwin', authorized: true, target: '/usr/local/bin/node' },
+    refused: {
+      platform: 'darwin', authorized: false, reason: 'screen-recording-denied',
+      detail: 'could not create image from display', target: '/usr/local/bin/node',
+      guidance: ['a step'],
+    },
+    'settings opened': { platform: 'darwin', authorized: false, target: '/usr/local/bin/node', settingsOpened: true, guidance: [] },
+    'with a mount issue': { platform: 'darwin', authorized: true, target: '/usr/local/bin/node', issues: ['the screenshot tool is unavailable'] },
+  };
+  for (const [name, value] of Object.entries(shapes)) {
+    const problems = validateJsonSchemaValue(schema, value);
+    assert.deepEqual(problems, [], `${name} does not satisfy the declared schema: ${problems.join('; ')}`);
+  }
 });
 
 process.stdout.write('\nchild process execution\n');
@@ -1060,6 +1157,10 @@ if (!probe.authorized) {
 
     const blocks = tool.output.render({}, value);
     assert.equal(blocks.length, 4, 'one text envelope and three images');
+
+    // The shape a real burst produces, checked against the declaration the
+    // harness will hold it to.
+    assert.deepEqual(validateJsonSchemaValue(compiledOutput(tool), value), []);
   });
 
   await test('lists the connected displays in the order -D numbers them', async (skip) => {

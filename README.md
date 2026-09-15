@@ -119,7 +119,19 @@ All keys are optional.
 | `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
 | `timeoutMs` | `120000` | Cooperative budget for one capture. |
 | `frames` / `interval_ms` | `1` / `200` | Frames per call and the target gap between them. At most 10 frames, because they share the harness's per-message image budget. |
-| `duration_ms` | — | State how long the motion lasts and let the tool size the burst, instead of computing frames and interval yourself. Exclusive with the two above. |
+| `duration_ms` | — | State how long the motion lasts and let the tool size the burst, instead of computing frames and interval yourself. |
+
+`frames`, `interval_ms` and `duration_ms` describe one burst and **any two of
+them determine the third**: frames with an interval gives the span, frames with
+a duration gives the interval that divides it, an interval with a duration gives
+how many frames fit. All three at once is refused rather than resolved.
+
+That is also the cost lever. Each frame is an image and images are what cost, so
+holding the window fixed and **raising `interval_ms`** trades resolution for
+cost — the same motion watched with fewer images — while lowering it spends more
+for a finer sample. A window given alone is sampled at the ordinary frame count,
+not at the maximum, because the maximum is the most expensive answer and was not
+asked for.
 | `maxDimension` | `8192` | Largest side, in pixels, a capture may have. The provider caps an image side at 8192 (4096 once a request carries fifteen or more images) and the attachment store caps it at 8192 as well; a single display never reaches either. A capture over the cap is refused with its size named. |
 | `keepRecent` | `50` | How many of the newest captures to keep in `outputDir`. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. `0` keeps everything. |
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |

@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-80 cases, all passing. They run without a harness: the logic modules are
+83 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -37,10 +37,20 @@ What they cover:
   are applied on different paths and a silent drift would make behaviour
   depend on how the plugin loaded;
 - the image content blocks, including the downscale multiplier;
-- `duration_ms`: that a 300ms window becomes seven frames and a two-second
-  window spends the whole budget, that a window shorter than one capture still
-  yields two frames, that mixing it with the explicit knobs is refused rather
-  than resolved, and that the reply names the window it covered;
+- the burst contract: that each pair of frames, interval and window settles the
+  third, that a window alone is sampled at the ordinary frame count rather than
+  the maximum, and that holding a window fixed while raising the interval is
+  monotonically fewer frames — which is the cost lever, asserted as a
+  monotonicity rather than as one example;
+- schema conformance: every shape either tool can return — one capture, a burst,
+  a burst that under-delivered, an inventory, an inventory missing a size, and
+  each permission outcome — validated against the schema the tool itself
+  declares, using the harness's own `validateJsonSchemaValue` on the compiled
+  declaration. This exists because adding the inventory mode without widening
+  the output declaration produced a tool that worked until it was called: the
+  harness refused its return value with "returned invalid output". Only a live
+  call revealed it; now CI does;
+- the reply names the window it covered when one was asked for;
 - metadata stripping: that a capture's descriptive chunks are removed and its
   dimensions survive, and that bytes the rewriter cannot handle safely — a
   non-PNG, or a PNG that never reaches `IEND` — come back exactly as they were

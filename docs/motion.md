@@ -94,18 +94,34 @@ capture of 2388x1668, slower than the larger 3840x2160 main screen at 169ms,
 because the transport is not the same. Region captures were within a
 millisecond of each other on both.
 
-## Stating a window instead of a rate
+## Three numbers, any two of which settle the third
 
-`frames` and `interval_ms` are the explicit controls, but they put the
-arithmetic on the caller, and the arithmetic is the easy part to get wrong: the
-frames span `(frames - 1) x interval_ms` of real time, so the default six at
-200ms cover about one second — right for a second-long process, wrong for a
-300ms animation and equally wrong for a two-second one.
+A burst is described by how many frames, how far apart, and over how long. The
+frames span `(frames - 1) x interval_ms` of real time, so the ordinary six at
+200ms cover about a second — right for a one-second process, wrong for a 300ms
+animation and equally wrong for a two-second one. Leaving that arithmetic to the
+caller is how it gets got wrong.
 
-`duration_ms` states the window instead and lets the tool spend it: as many
-frames as fit, up to the cap, with the interval dividing the window evenly. It
-is exclusive with the other two rather than overriding them, because a caller
-who set both has a belief about which wins.
+So all three are parameters, and **any two determine the third**:
+
+| given | settled |
+| --- | --- |
+| `frames` + `interval_ms` | the span |
+| `frames` + `duration_ms` | the interval that divides the window |
+| `interval_ms` + `duration_ms` | how many frames fit |
+| `duration_ms` alone | the ordinary frame count, at an interval that divides the window |
+
+The second row is the one that matters for cost. Holding the window fixed and
+raising the interval is how a caller asks for a **coarser sample rather than a
+shorter one** — the same motion, watched with fewer images. Since each frame is
+an image and images are what cost, that is the lever.
+
+Giving all three is refused rather than resolved: a caller who set all three has
+a belief about which wins, and guessing wrong is worse than saying so.
+
+A window given alone is sampled at the ordinary frame count rather than at the
+maximum, because the maximum is the most expensive answer and was not asked
+for.
 
 That also defines the reachable range. The lower bound is the capture cost: ten
 frames at the 47ms floor spans about 0.4s, and no request can resolve motion
