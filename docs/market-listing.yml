@@ -92,11 +92,21 @@ description:
 # entry committed, so the submission is known to be well-formed before it is
 # sent. Each line names the step from .github/workflows/pr-check.yml.
 #
-#   entry filename and depth   data/plugins/<owner>__<repo>.yml, exactly one
+# Re-run against upstream main @ 7a5da6a54, to catch the rules having moved
+# between the first rehearsal and the submission rather than trusting a result
+# from an earlier checkout. The contributing rules had not changed in any way
+# that affects this entry.
+#
+#   entry file name and depth  data/plugins/<owner>__<repo>.yml, exactly one
 #                              level deep — readEntries() globs
 #                              data/plugins/*.yml and is not recursive, so a
-#                              file anywhere else is silently never read.
-#                              -> no stray or misplaced files found.
+#                              file anywhere else is silently never read. The
+#                              file name must also match the url.
+#                              -> read back as "davidekingsss/dsh-screen-eye",
+#                                 category "vision"; no stray or misplaced
+#                                 files.
+#   catalog validation         -> `validateEntries()` over the whole list:
+#                                 0 problems, none pointing at this entry.
 #   READMEs match data/plugins committed as yml only, so the generator runs in
 #                              the runner and nothing has to match.
 #                              -> `node scripts/generate-readme.mjs` regenerated
