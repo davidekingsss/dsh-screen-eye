@@ -37,7 +37,7 @@ import {
 } from '../lib/permission.mjs';
 import { screenPermissionTool } from '../lib/permission-tool.mjs';
 import { capturesToRemove, pruneCaptures } from '../lib/retention.mjs';
-import { screenshotTool } from '../lib/screenshot-tool.mjs';
+import { captureFailureError, screenshotTool } from '../lib/screenshot-tool.mjs';
 import { resolveOutputPath, resolveSettings } from '../lib/settings.mjs';
 
 let passed = 0;
@@ -405,6 +405,119 @@ await test('validates arguments through the harness schema', async () => {
     () => tool.execute({ mode: 'nonsense' }, stubExec()),
     /mode/u,
   );
+});
+
+await test('refuses a capture when the model route cannot be resolved', async () => {
+  const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+  // No agent on the execution context and no llm service: the route is
+  // unknowable, and guessing would spend a capture on an unknown viewer.
+  await assert.rejects(
+    () => tool.execute({ mode: 'screen' }, stubExec()),
+    /route could not be resolved/u,
+  );
+});
+
+process.stdout.write('\nscreen_permission tool\n');
+
+await test('reports the live permission state and how to fix it', async () => {
+  const tool = screenPermissionTool(resolveSettings({}));
+  const value = await tool.execute({}, stubExec());
+  assert.equal(value.platform, process.platform);
+  assert.equal(typeof value.authorized, 'boolean');
+  assert.equal(value.target, grantTargetPath());
+  // This machine's state is not the assertion — that the tool reports it
+  // truthfully is. Whichever way it comes out, the two shapes are fixed.
+  if (value.authorized) {
+    assert.equal(value.guidance, undefined, 'nothing to fix means nothing to explain');
+    assert.equal(value.reason, undefined);
+  } else {
+    assert.ok(Array.isArray(value.guidance));
+    assert.ok(value.guidance.join('\n').includes(grantTargetPath()));
+  }
+});
+
+await test('defaults to action "check" when none is given', async () => {
+  const tool = screenPermissionTool(resolveSettings({}));
+  const explicit = await tool.execute({ action: 'check' }, stubExec());
+  assert.equal(typeof explicit.authorized, 'boolean');
+  assert.equal(explicit.settingsOpened, undefined);
+});
+
+await test('renders both outcomes with the path the user must grant', () => {
+  const tool = screenPermissionTool(resolveSettings({}));
+  const denied = tool.output.render({}, {
+    platform: 'darwin',
+    authorized: false,
+    reason: 'screen-recording-denied',
+    target: '/usr/local/bin/node',
+    guidance: ['Open System Settings.', 'Add /usr/local/bin/node.'],
+  });
+  assert.equal(denied.length, 1);
+  assert.equal(denied[0].type, 'text');
+  assert.match(denied[0].text, /<authorized>false<\/authorized>/u);
+  assert.match(denied[0].text, /<target>\/usr\/local\/bin\/node<\/target>/u);
+
+  const granted = tool.output.render({}, {
+    platform: 'darwin',
+    authorized: true,
+    target: '/usr/local/bin/node',
+  });
+  assert.match(granted[0].text, /<authorized>true<\/authorized>/u);
+  assert.doesNotMatch(granted[0].text, /Tell the user exactly this/u);
+});
+
+await test('renders the settings-opened outcome without claiming authorisation', () => {
+  const tool = screenPermissionTool(resolveSettings({}));
+  const [block] = tool.output.render({}, {
+    platform: 'darwin',
+    authorized: false,
+    target: '/usr/local/bin/node',
+    settingsOpened: true,
+    guidance: ['Turn the switch on.'],
+  });
+  // Opening the pane does not grant anything, and the render must not imply
+  // it did — that is the difference between guiding the user and misleading.
+  assert.match(block.text, /<authorized>false<\/authorized>/u);
+  assert.match(block.text, /settings pane has been opened/u);
+});
+
+process.stdout.write('\ncapture failure messages\n');
+
+await test('a denied capture carries the onboarding steps, not the system string', () => {
+  const denied = new CaptureError('could not create image from display', {
+    kind: DENIED,
+    detail: 'could not create image from display',
+  });
+  const message = captureFailureError(denied, 'en').message;
+  assert.match(message, /refused by macOS/u);
+  assert.ok(message.includes(grantTargetPath()), 'the message must name what to grant');
+  assert.match(message, /Screen & System Audio Recording/u);
+  assert.match(message, /No DSH restart is needed/u);
+  // The raw system string is replaced, not merely prefixed: it reads like a
+  // bug and tells the user nothing they can act on.
+  assert.doesNotMatch(message, /could not create image from display/u);
+
+  const chinese = captureFailureError(denied, 'zh').message;
+  assert.match(chinese, /屏幕录制/u);
+  assert.ok(chinese.includes(grantTargetPath()));
+});
+
+await test('an ordinary capture failure keeps the system detail', () => {
+  const failed = new CaptureError('screencapture exited with code 1', {
+    kind: 'capture-failed',
+    detail: 'rect (0, 0, 8, 8) does not intersect any displays',
+  });
+  const message = captureFailureError(failed, 'en').message;
+  assert.match(message, /does not intersect any displays/u);
+  assert.doesNotMatch(message, /Screen Recording/u, 'a non-TCC failure must not blame the grant');
+
+  const bare = captureFailureError(new CaptureError('no output at all'), 'en').message;
+  assert.equal(bare, 'no output at all');
+});
+
+await test('an error that is not a capture failure is passed through untouched', () => {
+  const original = new Error('something else entirely');
+  assert.equal(captureFailureError(original, 'en'), original);
 });
 
 process.stdout.write('\nlive capture\n');

@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-39 cases, all passing. They run without a harness: the logic modules are
+47 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -36,6 +36,17 @@ What they cover:
 - the image content blocks, including the downscale multiplier;
 - permission diagnosis: a TCC denial is classified separately from every other
   failure, and the guidance names the exact executable to grant;
+- the `screen_permission` tool itself — its live report on this machine, that
+  `check` is the default action, and that both render outcomes name the path to
+  grant. The settings-opened outcome is asserted to still report
+  `authorized: false`, because opening a pane grants nothing and the text must
+  not imply otherwise;
+- the message a **denied** capture produces: it carries the onboarding steps
+  and the computed grant target, and it *replaces* the raw
+  `could not create image from display` rather than prefixing it, since that
+  string reads like a bug and tells the user nothing they can act on. The
+  non-TCC branch is asserted not to mention Screen Recording at all, so an
+  ordinary failure never misattributes blame to the grant;
 - tool wiring: `apply()` registers both tools on darwin and **registers
   nothing** on a non-darwin host;
 - the bundle patch carries the platform gate, and the package stays
