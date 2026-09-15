@@ -71,6 +71,26 @@ rather than "watch everything":
 screenshot  mode=region  region=<the area>  frames=6  interval_ms=200
 ```
 
-`interval_ms` is a target rather than a promise. A capture costs about 170ms,
-so a smaller gap cannot be met; the envelope reports the spacing actually
-achieved instead of repeating the request back.
+## How fast frames can be taken
+
+`interval_ms` is a target rather than a promise, and how low it can go depends
+on how much of the screen is being encoded. Measured on the development
+machine, five runs each:
+
+| captured area | per frame | frames across a 300-500ms animation |
+| --- | --- | --- |
+| 3840x2160, whole screen | 155 ms | 1-3 |
+| 1920x1080 | 71 ms | 4-7 |
+| 1200x800, a component | 56 ms | 5-8 |
+| 600x400 | 51 ms | 5-9 |
+| 200x150 | 47 ms | 6-10 |
+
+Roughly two thirds of the cost is process startup and one third is encoding,
+which is why the curve flattens: the floor is about 45ms whatever the area.
+
+The consequence is the useful part. A short animation — a few hundred
+milliseconds — is not resolved by asking for a finer interval over the whole
+screen, because that cannot be met. It is resolved by **capturing the small
+region it happens in**, where the floor is three times lower. The envelope
+reports the spacing achieved, and says so explicitly when the request could not
+be met, so the next call can ask for something achievable.

@@ -17,15 +17,23 @@ Two model-callable tools:
 
 `mode` selects what is captured: `screen` (default, the main display), `display`
 (one display, by index), `region` (a rectangle, whose origin may be negative so
-a monitor placed to the left of or above the main one is reachable), or the
-interactive `window` / `select`, which wait for the user to click a window or
-drag a rectangle.
+a monitor placed to the left of or above the main one is reachable), `displays`
+(which captures nothing and lists the connected screens with the index `display`
+expects), or the interactive `window` / `select`, which wait for the user to
+click a window or drag a rectangle.
 
 Set `frames` above 1 and the call takes that many captures `interval_ms` apart
 and returns them all, which is how something that changes over time can be
 seen. This is deliberately not a GIF: the harness stores images single-frame,
-so an animated GIF arrives as its first frame. [`docs/motion.md`](docs/motion.md)
-has the evidence and the reasoning.
+so an animated GIF arrives as its first frame.
+
+Both knobs are yours to set, and the useful direction is not always "finer".
+How fast frames can be taken depends on the area — 155ms for a whole 4K screen
+but 56ms for a 1200x800 region — so a short component animation is resolved by
+capturing the small area it happens in, not by asking for a finer interval over
+everything. The reply reports the spacing actually achieved, and says so when
+the request could not be met. [`docs/motion.md`](docs/motion.md) has the
+measurements and the reasoning.
 
 Every other call returns **exactly one image**. That is a deliberate constraint rather
 than a limitation of the system: `screencapture` writes *one file per screen*,

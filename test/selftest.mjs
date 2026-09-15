@@ -30,7 +30,7 @@ import {
   screencaptureArgs,
 } from '../lib/capture.mjs';
 import { run } from '../lib/exec.mjs';
-import { imageContent } from '../lib/image.mjs';
+import { formatBurstOutput, imageContent } from '../lib/image.mjs';
 import { pngDimensions } from '../lib/png.mjs';
 import {
   DENIED,
@@ -442,6 +442,28 @@ await test('renders a burst as one envelope and one image block per frame', () =
   assert.ok(blocks.slice(1).every((block) => block.type === 'image'));
 });
 
+await test('says when the requested interval could not be met', () => {
+  // The gap between asked-for and achieved is the feedback that lets the next
+  // call ask for something achievable — usually by watching a smaller region,
+  // which is captured faster.
+  const frame = (n) => ({
+    path: `/tmp/f${n}.png`,
+    capturedAt: '2026-09-15T00:00:00.000Z',
+    image: { attachmentId: `i${n}`, mediaType: 'image/png', bytes: 1, width: 10, height: 10 },
+  });
+  const met = formatBurstOutput({
+    mode: 'region', capturedAt: 'now', frames: [frame(1), frame(2)], spacingMs: 200, intervalMs: 200,
+  });
+  assert.match(met, /about 200ms apart/u);
+  assert.doesNotMatch(met, /cannot meet/u, 'a met interval must not be reported as missed');
+
+  const missed = formatBurstOutput({
+    mode: 'screen', capturedAt: 'now', frames: [frame(1), frame(2)], spacingMs: 155, intervalMs: 40,
+  });
+  assert.match(missed, /asked for 40ms/u);
+  assert.match(missed, /a smaller region is captured faster/u);
+});
+
 await test('a single capture keeps its original one-image shape', () => {
   const blocks = imageContent({
     path: '/tmp/a.png',
@@ -450,6 +472,22 @@ await test('a single capture keeps its original one-image shape', () => {
     image: { attachmentId: 'a', mediaType: 'image/png', bytes: 1, width: 10, height: 10 },
   });
   assert.equal(blocks.length, 2, 'burst support must not change the single-capture contract');
+});
+
+process.stdout.write('\ndisplays\n');
+
+await test('the inventory mode refuses capture arguments', () => {
+  // It reports and returns; silently ignoring a region or a frame count would
+  // let a caller believe it had captured something.
+  for (const args of [
+    { mode: 'displays', region: '0,0,10,10' },
+    { mode: 'displays', display: 2 },
+    { mode: 'displays', frames: 3 },
+    { mode: 'displays', interval_ms: 100 },
+  ]) {
+    assert.throws(() => planCapture(args), /captures nothing/u, JSON.stringify(args));
+  }
+  assert.equal(planCapture({ mode: 'displays' }).mode, 'displays');
 });
 
 process.stdout.write('\nchild process execution\n');
@@ -848,6 +886,30 @@ if (!probe.authorized) {
 
     const blocks = tool.output.render({}, value);
     assert.equal(blocks.length, 4, 'one text envelope and three images');
+  });
+
+  await test('lists the connected displays in the order -D numbers them', async () => {
+    // Deliberately built with the default settings and an execution context
+    // carrying no agent at all: the inventory returns no image, so it must not
+    // be gated on the calling route being able to see one.
+    const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+    const value = await tool.execute({ mode: 'displays' }, stubExec());
+
+    assert.equal(value.mode, 'displays');
+    assert.ok(Array.isArray(value.displays) && value.displays.length >= 1);
+    // -D numbers the main display 1, so the list must lead with it and be
+    // contiguous from 1 — that is the whole contract this mode exists for.
+    assert.equal(value.displays[0].main, true, 'the first entry must be the main display');
+    assert.deepEqual(
+      value.displays.map((display) => display.index),
+      value.displays.map((_, position) => position + 1),
+    );
+    assert.ok(value.displays.every((display) => typeof display.name === 'string' && display.name !== ''));
+
+    const blocks = tool.output.render({}, value);
+    assert.equal(blocks.length, 1, 'an inventory carries no image');
+    assert.equal(blocks[0].type, 'text');
+    assert.match(blocks[0].text, /<displays count=\d+>/u);
   });
 
   await test('reports a non-zero exit instead of writing an empty file', async () => {

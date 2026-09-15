@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-68 cases, all passing. They run without a harness: the logic modules are
+71 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -178,7 +178,33 @@ as `path`, which is the escape hatch working as intended.
 That is the claim this plugin makes — an agent that looks by itself — checked
 against an agent that was not told how.
 
-## 5. What the plugin's logs are worth — a canary
+## 5. Multi-display, actually exercised
+
+This section exists because the earlier version of this file recorded
+multi-display as reasoned about but never run: the development machine had one
+display. A second screen was then attached — an iPad in Sidecar — which turned
+three assumptions into observations.
+
+- `system_profiler` listed both: the 4K monitor first, marked
+  `spdisplays_main`, the iPad second at 2388x1668. The iPad entry **omits**
+  `spdisplays_online` entirely, so an inventory that treated a missing key as
+  offline would hide the second screen on exactly the setup it exists to
+  describe. The enumeration does not require that key.
+- **`-D`'s numbering matches that order.** `-D 1` captured 3840x2160 and
+  `-D 2` captured 2388x1668 — the two screens, in the order reported. This had
+  been an assumption; it is now a measurement, and it is what lets
+  `mode: "displays"` hand out an index worth using.
+- `-m` still captures only the main display, so the one-file-per-call contract
+  holds on a multi-display machine.
+- An out-of-range index fails cleanly and names the range:
+  `-D 3` → "Invalid display specified. Must be a number from 1-2".
+
+What remains unexercised: a **region with a negative origin** that actually
+intersects a second display. Negative coordinates were verified to be accepted
+by the binary, but on this arrangement both screens sit at or right of the
+main display's origin, so there was still no rectangle to aim at.
+
+## 6. What the plugin's logs are worth — a canary
 
 Checked because a comment in the code asserted it, and the assertion was wrong.
 
@@ -196,16 +222,8 @@ avoid. Failures are therefore also recorded and reported through
 `screen_permission`, which is the tool an agent reaches for when the screen
 misbehaves. The canary was removed after the run.
 
-## 6. What was reasoned about but not executed
+## 7. What was reasoned about but not executed
 
-- **Multi-display behaviour.** The machine this was developed on has one
-  display, so no multi-display case was ever run. What was done instead:
-  `screencapture`'s manual was read rather than assumed, and it says the output
-  argument takes *one file per screen* — which is why the default mode now
-  passes `-m` and is documented as the main display, so that one call cannot
-  produce files this pipeline does not resolve and read. Negative region
-  coordinates were verified to be *accepted* by the binary, but a region that
-  actually intersects a second display could not be captured here.
 - **Windows.** No capture engine is shipped, so nothing about Windows was run.
   [`windows.md`](windows.md) records the assessment, including the parts of it
   that are hypotheses rather than findings.
