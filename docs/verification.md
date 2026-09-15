@@ -140,7 +140,33 @@ directory and the code did something else; the code now matches the promise,
 because a directory a caller merely pointed one capture at is not a directory
 retention should be walking.
 
-## 4. What the plugin's logs are worth — a canary
+## 4. In a real harness, unprompted
+
+Two things were still unproven after the runs above: that the plugin works in a
+harness someone actually restarted into, rather than an isolated profile built
+for testing; and that an agent reaches for the tool **without being told it
+exists**.
+
+The first: with the plugin installed in the real `web` profile, the harness was
+restarted, and both tools appeared in the session's tool list and were called
+directly — `screen_permission` reporting `authorized: true`, and `screenshot`
+returning a capture of the desktop that could be read back in detail. The
+capture landed in the plugin's default output directory, so that run exercised
+the configured default rather than an override.
+
+The second: a one-shot run was given the task *"What is currently on my screen?
+Describe what you see and read back any text you can find."* — no tool name, no
+hint that a screenshot tool exists, nothing but the need to see. The agent
+found it and used it: one full capture, then thirteen region crops to read what
+was too small at full size, and an answer naming the browser page, the
+conversation in the harness window, the menu-bar clock, the dock icons and a
+running status line. It also named its own crops meaningfully and passed them
+as `path`, which is the escape hatch working as intended.
+
+That is the claim this plugin makes — an agent that looks by itself — checked
+against an agent that was not told how.
+
+## 5. What the plugin's logs are worth — a canary
 
 Checked because a comment in the code asserted it, and the assertion was wrong.
 
@@ -158,7 +184,7 @@ avoid. Failures are therefore also recorded and reported through
 `screen_permission`, which is the tool an agent reaches for when the screen
 misbehaves. The canary was removed after the run.
 
-## 5. What was reasoned about but not executed
+## 6. What was reasoned about but not executed
 
 - **Multi-display behaviour.** The machine this was developed on has one
   display, so no multi-display case was ever run. What was done instead:
