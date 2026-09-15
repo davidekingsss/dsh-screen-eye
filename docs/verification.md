@@ -233,6 +233,11 @@ three assumptions into observations.
   holds on a multi-display machine.
 - An out-of-range index fails cleanly and names the range:
   `-D 3` → "Invalid display specified. Must be a number from 1-2".
+- The whole path was then walked through the tool rather than the binary:
+  `mode: "displays"` listed both screens with the indices, and
+  `mode: "display", display: 2` returned an image of the second screen at its
+  own resolution (2388x1668, projected to 956x668 for the model). So the
+  inventory hands out an index that the capture mode actually honours.
 
 What remains unexercised: a **region with a negative origin** that actually
 intersects a second display. Negative coordinates were verified to be accepted
