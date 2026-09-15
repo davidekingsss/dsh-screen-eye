@@ -4,6 +4,27 @@ This plugin is macOS-only. Windows is the obvious next platform, so this page
 records what was actually determined about it: what would be involved, what
 would be different, and why nothing was shipped.
 
+## What is actually platform-specific
+
+Measured rather than asserted, by counting macOS-specific references per module:
+
+| platform-neutral | macOS-specific |
+| --- | --- |
+| `capture-name`, `image`, `retention`, `settings` — 455 lines, no macOS reference at all | `permission` (TCC), `displays` (`system_profiler`), the capture engine |
+| `png` and `exec` — one incidental mention each | `index`, `screenshot-tool`, `permission-tool` — the wiring and the two tool definitions |
+
+So the shape is a platform-neutral core with a macOS layer over it: burst
+timing, the image content blocks, retention, naming, the attachment commit and
+the output contract are all platform-independent, and the modes are declared
+once. A second engine would slot in under that seam rather than beside it.
+
+The boundary itself is defined in one place — the engine registry in
+`lib/capture.mjs` — and the runtime gate asks it rather than naming a platform.
+Only the bundle patch's `!!js` expression has to repeat the answer, because the
+loader evaluates it without access to the module, and a case in the self-test
+evaluates that expression against the registry on every run so the two cannot
+drift. That case was checked by making them disagree on purpose.
+
 ## There is no equivalent permission gate
 
 The reason the macOS half of this plugin is mostly about permission is that
@@ -76,9 +97,11 @@ The work is self-contained, which is the point of the registry seam:
    `lib/capture.mjs` and register it under `'win32'`.
 2. Extend `screencaptureArgs`'s counterpart for PowerShell. Keep the mode
    validation in `planCapture` unchanged — it is already platform-neutral.
-3. Drop the `disabled: !!js process.platform !== 'darwin'` gate in
-   `cordis.patch.yml`, and the `process.platform` check in `index.mjs`, to
-   whatever set of platforms now has an engine.
+3. Nothing to do at runtime: `apply()` asks the engine registry whether the
+   host platform is served, so registering an engine is what enables it. The
+   one manual step is the `disabled: !!js` expression in `cordis.patch.yml`,
+   which the loader evaluates without access to the module — and a self-test
+   case fails if it disagrees with the registry.
 4. Add the platform to the description and the README, and record in
    `docs/verification.md` what was run on which machine — including, if it
    applies, the session-isolation hazard above.

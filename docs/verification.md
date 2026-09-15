@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-83 cases, all passing. They run without a harness: the logic modules are
+87 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -102,7 +102,16 @@ What they cover:
   clean-bill-of-health sentence rather than claiming a working screenshot tool
   the plugin's own report contradicts;
 - the bundle patch carries the platform gate, and the package stays
-  installable (`dsh.bundle` present, every required file in `files`).
+  installable (`dsh.bundle` present, every required file in `files`);
+- that the patch's gate and the engine registry agree on every platform,
+  evaluated by running the patch's own expression against the registry. They
+  live where they cannot import each other, so this is the only thing keeping
+  two copies of one fact from drifting — and the case was itself checked by
+  making them disagree on purpose and watching it fail;
+- that the guide action never reports a state it did not observe: on a machine
+  where the grant is already in place it opens nothing and explains nothing,
+  and where it is missing it opens the pane and tells the model to confirm with
+  a check rather than assume the fix worked.
 
 Cases that capture for real run only when the machine already has Screen
 Recording permission, so the suite is green before the grant as well. On CI

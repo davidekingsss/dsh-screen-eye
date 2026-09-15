@@ -13,7 +13,7 @@ Two model-callable tools:
 | Tool | What it does |
 |---|---|
 | `screenshot` | Captures the screen and returns the image itself, as an `image` content block the model can see. |
-| `screen_permission` | Reports whether macOS currently allows this process to capture, and opens the exact System Settings pane when it does not. |
+| `screen_permission` | Reports whether macOS currently allows this process to capture, and with `action: "guide"` opens the exact System Settings pane and hands over the path to grant. |
 
 `mode` selects what is captured: `screen` (default, the main display), `display`
 (one display, by index), `region` (a rectangle, whose origin may be negative so
@@ -92,8 +92,9 @@ install time.
 ## Grant Screen Recording (once)
 
 Call `screenshot` once. If permission is missing, the result tells you exactly
-what to do, and `screen_permission` with `action: "open_settings"` opens the
-pane for you. In short:
+what to do, and `screen_permission` with `action: "guide"` walks through it:
+it checks first, opens the pane only when the grant really is missing, and
+returns the path to add. In short:
 
 1. Open **System Settings → Privacy & Security → Screen & System Audio
    Recording**.

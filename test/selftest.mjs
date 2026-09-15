@@ -32,6 +32,7 @@ import {
 } from '../lib/capture.mjs';
 import { run } from '../lib/exec.mjs';
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
+import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values';
 
 import { displaysFromProfiler } from '../lib/displays.mjs';
 import { formatBurstOutput, imageContent } from '../lib/image.mjs';
@@ -705,17 +706,9 @@ const SAMPLE_IMAGE = Object.freeze({
   attachmentId: 'attachment-id', mediaType: 'image/png', bytes: 1024, width: 10, height: 10,
 });
 
-await test('every shape the screenshot tool returns satisfies its own schema', () => {
-  // The harness validates each returned value against the schema the tool
-  // declared and refuses the result when it does not fit, so a mismatch turns a
-  // working tool into one that reports "returned invalid output" at runtime.
-  // That is exactly what happened when the inventory mode was added while the
-  // declaration still required an image: only a live call revealed it. Compiling
-  // the declaration and checking every shape here makes it fail in CI instead.
-  const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
-  const schema = compiledOutput(tool);
-
-  const shapes = {
+/** Every shape the screenshot tool can return. */
+function screenshotShapes() {
+  return {
     'one capture': {
       path: '/tmp/a.png', mode: 'screen', capturedAt: 'now', display: 1, image: SAMPLE_IMAGE,
     },
@@ -735,29 +728,93 @@ await test('every shape the screenshot tool returns satisfies its own schema', (
     },
     'an inventory that could not read a size': { mode: 'displays', displays: [{ index: 2, name: 'Sidecar' }] },
   };
+}
 
-  for (const [name, value] of Object.entries(shapes)) {
-    const problems = validateJsonSchemaValue(schema, value);
-    assert.deepEqual(problems, [], `${name} does not satisfy the declared schema: ${problems.join('; ')}`);
-  }
-});
-
-await test('every shape the permission tool returns satisfies its own schema', () => {
-  const tool = screenPermissionTool(resolveSettings({}));
-  const schema = compiledOutput(tool);
-  const shapes = {
+/** Every shape the permission tool can return. */
+function permissionShapes() {
+  return {
     granted: { platform: 'darwin', authorized: true, target: '/usr/local/bin/node' },
     refused: {
       platform: 'darwin', authorized: false, reason: 'screen-recording-denied',
       detail: 'could not create image from display', target: '/usr/local/bin/node',
       guidance: ['a step'],
     },
-    'settings opened': { platform: 'darwin', authorized: false, target: '/usr/local/bin/node', settingsOpened: true, guidance: [] },
-    'with a mount issue': { platform: 'darwin', authorized: true, target: '/usr/local/bin/node', issues: ['the screenshot tool is unavailable'] },
+    'guided to fix it': {
+      platform: 'darwin', authorized: false, target: '/usr/local/bin/node',
+      settingsOpened: true, guidance: [], reason: 'screen-recording-denied',
+    },
+    'guided when nothing needed fixing': {
+      platform: 'darwin', authorized: true, target: '/usr/local/bin/node', settingsOpened: false,
+    },
+    'with a mount issue': {
+      platform: 'darwin', authorized: true, target: '/usr/local/bin/node',
+      issues: ['the screenshot tool is unavailable'],
+    },
   };
-  for (const [name, value] of Object.entries(shapes)) {
-    const problems = validateJsonSchemaValue(schema, value);
+}
+
+await test('every shape the screenshot tool returns satisfies its own schema', () => {
+  // The harness validates each returned value against the schema the tool
+  // declared and refuses the result when it does not fit, so a mismatch turns a
+  // working tool into one that reports "returned invalid output" at runtime.
+  // That is exactly what happened when the inventory mode was added while the
+  // declaration still required an image: only a live call revealed it.
+  const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+  for (const [name, value] of Object.entries(screenshotShapes())) {
+    const problems = validateJsonSchemaValue(compiledOutput(tool), value);
     assert.deepEqual(problems, [], `${name} does not satisfy the declared schema: ${problems.join('; ')}`);
+  }
+});
+
+await test('every shape the permission tool returns satisfies its own schema', () => {
+  const tool = screenPermissionTool(resolveSettings({}));
+  for (const [name, value] of Object.entries(permissionShapes())) {
+    const problems = validateJsonSchemaValue(compiledOutput(tool), value);
+    assert.deepEqual(problems, [], `${name} does not satisfy the declared schema: ${problems.join('; ')}`);
+  }
+});
+
+await test('every shape projects to lossless presentation metadata', () => {
+  // The harness snapshots this projection and refuses the whole call when it is
+  // not lossless JSON — a property holding `undefined` is enough to fail it.
+  // That is the second way the inventory mode failed live, after the schema was
+  // already fixed, so it is checked here with the harness's own predicate
+  // rather than a re-implementation of it.
+  const tools = {
+    screenshot: [screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({})), screenshotShapes()],
+    screen_permission: [screenPermissionTool(resolveSettings({})), permissionShapes()],
+  };
+  for (const [toolName, [tool, shapes]] of Object.entries(tools)) {
+    for (const [name, value] of Object.entries(shapes)) {
+      const meta = tool.output.presentationMeta?.({}, value);
+      if (meta === undefined) continue;
+      assert.notEqual(
+        snapshotJsonValue(meta),
+        undefined,
+        `${toolName} / ${name}: presentationMeta is not lossless JSON`,
+      );
+    }
+  }
+});
+
+await test('every shape renders to content blocks the harness knows', () => {
+  // render() is what the model actually receives, so a shape that renders
+  // nothing — or renders something without a type tag — is a shape that fails
+  // silently rather than loudly.
+  const tools = {
+    screenshot: [screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({})), screenshotShapes()],
+    screen_permission: [screenPermissionTool(resolveSettings({})), permissionShapes()],
+  };
+  for (const [toolName, [tool, shapes]] of Object.entries(tools)) {
+    for (const [name, value] of Object.entries(shapes)) {
+      const blocks = tool.output.render({}, value);
+      assert.ok(Array.isArray(blocks) && blocks.length > 0, `${toolName} / ${name}: rendered nothing`);
+      for (const block of blocks) {
+        assert.ok(typeof block?.type === 'string', `${toolName} / ${name}: a block has no type`);
+        assert.ok(['text', 'image'].includes(block.type), `${toolName} / ${name}: unknown block type ${block.type}`);
+      }
+      assert.equal(blocks[0].type, 'text', `${toolName} / ${name}: the first block should be the text envelope`);
+    }
   }
 });
 
@@ -948,6 +1005,29 @@ await test('renders both outcomes with the path the user must grant', () => {
   });
   assert.match(granted[0].text, /<authorized>true<\/authorized>/u);
   assert.doesNotMatch(granted[0].text, /Tell the user exactly this/u);
+});
+
+await test('the guide never reports a state it did not observe', async () => {
+  // The previous revision returned authorized: false from the settings action
+  // unconditionally, so asking for guidance on a machine that already had the
+  // grant was told it did not. A guidance path that invents the problem it is
+  // guiding you through is worse than no guidance.
+  const tool = screenPermissionTool(resolveSettings({}));
+  const value = await tool.execute({ action: 'guide' }, stubExec());
+  assert.equal(typeof value.authorized, 'boolean');
+
+  if (value.authorized) {
+    assert.equal(value.settingsOpened, false, 'nothing needed fixing, so nothing should be opened');
+    assert.equal(value.guidance, undefined, 'and there is nothing to explain');
+    const [block] = tool.output.render({}, value);
+    assert.doesNotMatch(block.text, /settings pane has been opened/u);
+  } else {
+    assert.equal(value.settingsOpened, true);
+    assert.ok(Array.isArray(value.guidance) && value.guidance.length > 0);
+    assert.ok(value.guidance.join('\n').includes(grantTargetPath()));
+    const [block] = tool.output.render({}, value);
+    assert.match(block.text, /call this tool with action "check" to confirm/u);
+  }
 });
 
 await test('renders the settings-opened outcome without claiming authorisation', () => {
@@ -1217,6 +1297,33 @@ await test('supports only darwin', () => {
   assert.equal(isSupportedPlatform('darwin'), true);
   assert.equal(isSupportedPlatform('win32'), false);
   assert.equal(isSupportedPlatform('linux'), false);
+});
+
+await test('the manifest platform gate agrees with the engine registry', async () => {
+  // The boundary is written where it cannot be derived: the patch's `!!js`
+  // expression is evaluated by the loader, which has no access to the module,
+  // and the engine registry lives in the module. Two hand-maintained copies of
+  // one fact is how a plugin ends up enabled on a platform it cannot serve —
+  // which is the failure this project has been careful about elsewhere. So the
+  // expression is evaluated here and compared against the registry.
+  const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
+  const expression = /disabled:\s*!!js\s+(.+)$/mu.exec(patch);
+  assert.ok(expression, 'the bundle patch must carry a platform gate');
+  // Evaluating our own repository's expression: the only way to be sure of what
+  // the loader will conclude from it is to ask it the same question.
+  const disabledOn = new Function('process', `return Boolean(${expression[1].trim()})`);
+
+  for (const platform of ['darwin', 'win32', 'linux', 'freebsd']) {
+    assert.equal(
+      disabledOn({ platform }),
+      !isSupportedPlatform(platform),
+      `the patch and the engine registry disagree about ${platform}`,
+    );
+  }
+  assert.ok(
+    ['darwin', 'win32', 'linux'].some((platform) => isSupportedPlatform(platform)),
+    'a gate that never opens is not a gate',
+  );
 });
 
 await test('the bundle patch gates the module on the platform', async () => {

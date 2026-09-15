@@ -11,7 +11,7 @@
 | 工具 | 作用 |
 |---|---|
 | `screenshot` | 截屏，并把图片本身作为 `image` 内容块返回给模型——模型是真的看得见。 |
-| `screen_permission` | 报告 macOS 当前是否允许本进程截屏；不允许时直接打开对应的系统设置面板。 |
+| `screen_permission` | 报告 macOS 当前是否允许本进程截屏；用 `action: "guide"` 可直接打开对应的系统设置面板并给出需要授权的路径。 |
 
 `mode` 决定截什么：`screen`（默认，主显示器）、`display`（按序号指定某一块
 屏幕）、`region`（指定矩形，原点可为负，因此在主屏左侧或上方的显示器也能
@@ -78,8 +78,8 @@ dsh plugin --profile web add link:/path/to/dsh-screen-eye
 ## 授予屏幕录制权限（一次性）
 
 调用一次 `screenshot`。如果缺权限，返回结果会明确告诉你该怎么做；
-`screen_permission` 配合 `action: "open_settings"` 会直接替你打开设置面板。
-简言之：
+`screen_permission` 配合 `action: "guide"` 会走完整个引导：先检查，只在授权确实缺失时
+才打开面板，并返回需要添加的路径。简言之：
 
 1. 打开 **系统设置 → 隐私与安全性 → 屏幕与系统音频录制**。
 2. 点 **+**，按 **⌘⇧G**，粘贴工具报告的那个路径（通常是运行 harness 的

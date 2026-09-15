@@ -20,6 +20,7 @@
 
 import z from '@deepseek-ai/schemastery';
 
+import { isSupportedPlatform } from './lib/capture.mjs';
 import { screenPermissionTool } from './lib/permission-tool.mjs';
 import { screenshotTool } from './lib/screenshot-tool.mjs';
 import { resolveSettings } from './lib/settings.mjs';
@@ -113,10 +114,11 @@ function registerTool(ctx, log, definition, what, issues) {
 /**
  * Mount the plugin.
  *
- * The `cordis.patch.yml` entry already carries a platform gate, which stops
- * the module being imported at all on a non-macOS host. This check stays as
+ * The `cordis.patch.yml` entry already carries a platform gate, which stops the
+ * module being imported at all where there is no engine. This check stays as
  * well: a direct mount that bypasses the patch must not register capture tools
- * on a platform that has no capture engine.
+ * on a platform that has no capture engine. It asks the engine registry rather
+ * than naming a platform, so the two cannot disagree.
  *
  * @param ctx - the registration scope.
  * @param config - normalised plugin config.
@@ -124,8 +126,12 @@ function registerTool(ctx, log, definition, what, issues) {
 export function apply(ctx, config = {}) {
   const log = ctx.logger(name);
 
-  if (process.platform !== 'darwin') {
-    log.info('not mounted: screen capture here is macOS-only (host platform is %s)', process.platform);
+  // Asked of the engine registry rather than of a platform name: the registry
+  // is where "which platforms can this serve" is actually decided, and a second
+  // hand-written copy of that answer is a copy that goes stale the moment an
+  // engine is added.
+  if (!isSupportedPlatform(process.platform)) {
+    log.info('not mounted: no capture engine for host platform %s', process.platform);
     return;
   }
 
