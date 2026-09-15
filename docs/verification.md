@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-47 cases, all passing. They run without a harness: the logic modules are
+48 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -29,7 +29,10 @@ What they cover:
   matcher retention uses to decide what it may delete, names this plugin did
   not write are never candidates, the newest N survive, `0` disables pruning,
   and the capture just returned is never among the removed — asserted both as a
-  unit rule and against real files on disk;
+  unit rule and against real files on disk. A capture the caller directs
+  elsewhere with an explicit `path` is asserted **not** to prune the directory
+  it lands in, with capture-shaped decoy files placed there so the scope, not
+  the name filter, is what the case proves;
 - that the schemastery defaults and the module fallbacks agree, because they
   are applied on different paths and a silent drift would make behaviour
   depend on how the plugin loaded;
@@ -111,6 +114,20 @@ collision case the self-test asserts.
 What this run does **not** establish: anything about Windows, and anything
 about a host whose model route cannot accept images (that path is refused at
 the gate and is covered by a self-test rather than by a live run).
+
+A second run through the same profile checked the configuration path, since
+the first one never exercised it: the agent chose its own filenames and passed
+`path` explicitly every time, so the configured directory was untouched. With
+the instruction to use the default location, a profile-level
+`cordis.patch.yml` override (`outputDir`, `keepRecent`) reached the plugin —
+the capture landed in the configured directory under the generated name, the
+default directory stayed empty, and the agent reported that path verbatim.
+That run also settled a question the code had been vague about: retention was
+scoped to `dirname(captured.outputPath)`, which is not the configured directory
+when the caller supplies a `path`. The README promised the configured
+directory and the code did something else; the code now matches the promise,
+because a directory a caller merely pointed one capture at is not a directory
+retention should be walking.
 
 ## 4. What was reasoned about but not executed
 

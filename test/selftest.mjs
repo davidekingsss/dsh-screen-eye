@@ -584,6 +584,35 @@ if (!probe.authorized) {
     }
   });
 
+  await test('a capture directed elsewhere never prunes that directory', async () => {
+    // A caller-supplied `path` may point at a directory the caller keeps for
+    // other reasons. Retention is scoped to the configured output directory,
+    // so nothing there may be touched even when the cap is exceeded — the
+    // files below are capture-shaped on purpose, to prove the scope rather
+    // than the name filter is what protects them.
+    const elsewhere = await mkdtemp(join(tmpdir(), 'dsh-screen-eye-elsewhere-'));
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        const when = new Date(Date.UTC(2020, 0, 1, 0, 0, index));
+        await writeFile(join(elsewhere, buildCaptureName(when, 'fedcba')), 'x');
+      }
+      const tool = screenshotTool(
+        stubCtx({ attachments: stubAttachments() }),
+        resolveSettings({ ...liveSettings, keepRecent: 1 }),
+      );
+      const value = await tool.execute(
+        { mode: 'region', region: '0,0,16,16', path: join(elsewhere, 'named-by-the-caller.png') },
+        stubExec(),
+      );
+      assert.equal(value.path, join(elsewhere, 'named-by-the-caller.png'));
+      const left = (await readdir(elsewhere)).sort();
+      assert.equal(left.length, 6, `the target directory must be left alone, saw ${left.length}`);
+      assert.ok(left.includes('named-by-the-caller.png'));
+    } finally {
+      await rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+
   await test('reports a non-zero exit instead of writing an empty file', async () => {
     await assert.rejects(
       () => captureScreen(planCapture({ mode: 'display', display: 99 }), {
