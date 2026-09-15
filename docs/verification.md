@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-30 cases, all passing. They run without a harness: the logic modules are
+37 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -20,6 +20,11 @@ What they cover:
   produces PNG so the declared media type is true;
 - output-path rules: absolute and `.png` only, and 200 generated names are
   distinct (two captures in the same second must not overwrite each other);
+- capture naming and retention together: 500 generated names all satisfy the
+  matcher retention uses to decide what it may delete, names this plugin did
+  not write are never candidates, the newest N survive, `0` disables pruning,
+  and the capture just returned is never among the removed — asserted both as a
+  unit rule and against real files on disk;
 - that the schemastery defaults and the module fallbacks agree, because they
   are applied on different paths and a silent drift would make behaviour
   depend on how the plugin loaded;
@@ -34,6 +39,14 @@ What they cover:
 Cases that capture for real run only when the machine already has Screen
 Recording permission, so the suite is green before the grant as well. On CI
 they skip.
+
+Every capture the suite takes goes into a temporary directory created for the
+run and removed at the end, and the pruning case gets a directory of its own.
+This is not incidental: an earlier revision wrote its live captures into the
+plugin's *default* output directory, which is inside the user's harness home,
+so running the tests left PNGs of the user's screen behind. The suite now
+asserts that its captures land in the test directory, and the directory is
+removed even when a case fails.
 
 ## 2. Loader acceptance — isolated profile
 
@@ -86,9 +99,12 @@ the gate and is covered by a self-test rather than by a live run).
 ## 4. What was reasoned about but not executed
 
 - **Windows.** No capture engine is shipped, so nothing about Windows was run.
-  The platform registry in `lib/capture.mjs` is the seam a Windows engine would
-  occupy.
+  [`windows.md`](windows.md) records the assessment, including the parts of it
+  that are hypotheses rather than findings.
 - **The client-side settings surface.** None is shipped in this version, so
   there is no browser UI to verify.
 - **A model without image input.** Refused up front; verified by self-test with
   a stubbed route, not against a real text-only model.
+- **Retention over a long run.** The rule and its file-level behaviour are
+  tested; that the default cap of 50 is the right number is a judgement, not a
+  measurement.

@@ -11,9 +11,12 @@
  */
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 
 import { Config, apply } from '../index.mjs';
+import { buildCaptureName, captureStamp, isCaptureName } from '../lib/capture-name.mjs';
 import {
   CAPTURE_MODES,
   CaptureError,
@@ -33,6 +36,7 @@ import {
   probeScreenRecording,
 } from '../lib/permission.mjs';
 import { screenPermissionTool } from '../lib/permission-tool.mjs';
+import { capturesToRemove, pruneCaptures } from '../lib/retention.mjs';
 import { screenshotTool } from '../lib/screenshot-tool.mjs';
 import { resolveOutputPath, resolveSettings } from '../lib/settings.mjs';
 
@@ -185,13 +189,97 @@ await test('generates unique names for captures in the same second', () => {
   assert.equal(names.size, 200);
 });
 
+process.stdout.write('\ncapture names and retention\n');
+
+await test('a generated name always matches the pattern retention uses', () => {
+  // These two are the write side and the delete side of the same format. If
+  // they drift, retention either stops working or starts matching files it did
+  // not create, so every generated name is checked against the matcher.
+  for (let index = 0; index < 500; index += 1) {
+    const name = buildCaptureName(new Date(), Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'));
+    assert.ok(isCaptureName(name), `generated name did not match: ${name}`);
+  }
+  // The disambiguator is real entropy, not a base-36 slice of Math.random(),
+  // which renders as fewer than six characters when the draw is small.
+  assert.match(basename(resolveOutputPath(undefined, '/tmp/shots')), /-[0-9a-f]{6}\.png$/u);
+});
+
+await test('the matcher rejects names this plugin did not write', () => {
+  for (const name of [
+    'shot-2026-09-15_15-25-18-abcde.png',   // five-character suffix
+    'shot-2026-09-15_15-25-18-ABCDEF.png',  // upper case
+    'shot-2026-9-15_15-25-18-abcdef.png',   // unpadded month
+    'screenshot-2026-09-15_15-25-18-abcdef.png',
+    'shot-2026-09-15_15-25-18-abcdef.png.bak',
+    'shot-2026-09-15_15-25-18-abcdef.jpg',
+    'notes.txt',
+    'shot-2026-09-15_15-25-18-abcdef',
+  ]) {
+    assert.equal(isCaptureName(name), false, `${name} must not be treated as a capture`);
+  }
+  assert.ok(isCaptureName('shot-2026-09-15_15-25-18-abcdef.png'));
+});
+
+await test('capture stamps are fixed width so name order is time order', () => {
+  const early = captureStamp(new Date(Date.UTC(2026, 0, 2, 3, 4, 5)));
+  const late = captureStamp(new Date(Date.UTC(2026, 10, 12, 13, 14, 15)));
+  assert.equal(early.length, late.length);
+  assert.ok(early < late);
+});
+
+await test('retention keeps the newest and is disabled by zero', () => {
+  const names = [
+    'shot-2020-01-01_00-00-00-aaaaaa.png',
+    'shot-2020-01-01_00-00-01-bbbbbb.png',
+    'shot-2020-01-01_00-00-02-cccccc.png',
+    'unrelated.png',
+  ];
+  assert.deepEqual(capturesToRemove(names, 2), ['shot-2020-01-01_00-00-00-aaaaaa.png']);
+  assert.deepEqual(capturesToRemove(names, 4), []);
+  assert.deepEqual(capturesToRemove(names, 0), [], 'zero disables retention');
+  assert.deepEqual(capturesToRemove(names, -1), []);
+  // A file this plugin did not write is never a candidate, whatever the cap.
+  assert.ok(!capturesToRemove(names, 1).includes('unrelated.png'));
+});
+
+await test('retention never removes the capture it was asked to protect', () => {
+  const newest = 'shot-2020-01-01_00-00-02-cccccc.png';
+  const names = [newest, 'shot-2020-01-01_00-00-01-bbbbbb.png', 'shot-2020-01-01_00-00-00-aaaaaa.png'];
+  // Even with a cap that would otherwise drop it, the protected name survives:
+  // within one second the order is the random suffix, not time, so "the newest
+  // N" cannot be trusted to include the capture just taken.
+  const doomed = capturesToRemove(names, 1, newest);
+  assert.deepEqual(doomed, ['shot-2020-01-01_00-00-00-aaaaaa.png', 'shot-2020-01-01_00-00-01-bbbbbb.png']);
+});
+
+await test('pruning reports what it removed and survives a missing directory', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-screen-eye-retention-'));
+  try {
+    for (let index = 0; index < 5; index += 1) {
+      await writeFile(join(dir, buildCaptureName(new Date(Date.UTC(2020, 0, 1, 0, 0, index)), 'abcdef')), 'x');
+    }
+    await writeFile(join(dir, 'keep-me.png'), 'x');
+    const removed = await pruneCaptures(dir, 2, undefined);
+    assert.equal(removed, 3);
+    const left = (await readdir(dir)).sort();
+    assert.deepEqual(left, [
+      'keep-me.png',
+      buildCaptureName(new Date(Date.UTC(2020, 0, 1, 0, 0, 3)), 'abcdef'),
+      buildCaptureName(new Date(Date.UTC(2020, 0, 1, 0, 0, 4)), 'abcdef'),
+    ]);
+    assert.equal(await pruneCaptures(join(dir, 'does-not-exist'), 2), 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 await test('the schemastery defaults agree with the module fallbacks', () => {
   // These two are applied on different paths — the schema when the loader
   // normalises config, the module when it is called directly — so a silent
   // drift between them would make behaviour depend on how the plugin loaded.
   const fromSchema = Config({});
   const fromModule = resolveSettings({});
-  for (const key of ['locale', 'timeoutMs', 'requireImageCapableModel', 'deleteAfterCommit']) {
+  for (const key of ['locale', 'timeoutMs', 'keepRecent', 'requireImageCapableModel', 'deleteAfterCommit']) {
     assert.deepEqual(fromSchema[key], fromModule[key], `default for "${key}" drifted`);
   }
   // outputDir depends on DSH_HOME, so it is resolved at runtime, not in schema.
@@ -299,18 +387,24 @@ await test('validates arguments through the harness schema', async () => {
 
 process.stdout.write('\nlive capture\n');
 
+// Every capture the suite takes goes here, never to the plugin's real output
+// directory. A test that writes PNGs of the user's screen into their harness
+// home is a test that leaves their data behind, and the default output
+// directory is exactly that — so it is overridden, and the directory is
+// removed again below.
+const liveDir = await mkdtemp(join(tmpdir(), 'dsh-screen-eye-test-'));
+const liveSettings = { requireImageCapableModel: false, outputDir: liveDir };
+
 const probe = await probeScreenRecording();
 if (!probe.authorized) {
   process.stdout.write(`  skip live capture — Screen Recording not granted (${probe.reason})\n`);
 } else {
   await test('captures the real screen and commits an image attachment', async () => {
     const attachments = stubAttachments();
-    const tool = screenshotTool(
-      stubCtx({ attachments }),
-      resolveSettings({ requireImageCapableModel: false }),
-    );
+    const tool = screenshotTool(stubCtx({ attachments }), resolveSettings(liveSettings));
     const value = await tool.execute({ mode: 'screen' }, stubExec());
     assert.match(value.path, /\.png$/u);
+    assert.ok(value.path.startsWith(liveDir), 'the capture must land in the test directory');
     assert.equal(value.mode, 'screen');
     assert.equal(attachments.saved.length, 1);
     assert.equal(attachments.saved[0].mediaType, 'image/png');
@@ -321,19 +415,44 @@ if (!probe.authorized) {
 
   await test('captures a region with mode=region', async () => {
     const attachments = stubAttachments();
-    const tool = screenshotTool(
-      stubCtx({ attachments }),
-      resolveSettings({ requireImageCapableModel: false }),
-    );
+    const tool = screenshotTool(stubCtx({ attachments }), resolveSettings(liveSettings));
     const value = await tool.execute({ mode: 'region', region: '0,0,320,240' }, stubExec());
     assert.equal(value.mode, 'region');
     assert.equal(attachments.saved.length, 1);
   });
 
+  await test('prunes old captures on disk but never the one just taken', async () => {
+    // Its own directory: the live captures the cases above already took are
+    // newer than the seeds below, so sharing `liveDir` would make the
+    // assertion depend on their names rather than on the rule being tested.
+    const pruneDir = await mkdtemp(join(tmpdir(), 'dsh-screen-eye-prune-'));
+    try {
+      for (let index = 0; index < 6; index += 1) {
+        const when = new Date(Date.UTC(2020, 0, 1, 0, 0, index));
+        await writeFile(join(pruneDir, buildCaptureName(when, `abcde${index}`)), 'x');
+      }
+      const settings = resolveSettings({ ...liveSettings, outputDir: pruneDir, keepRecent: 2 });
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), settings);
+      const value = await tool.execute({ mode: 'region', region: '0,0,16,16' }, stubExec());
+
+      const left = (await readdir(pruneDir)).filter(isCaptureName).sort();
+      // The new capture is the newest file, so it is inside the kept window
+      // rather than an extra survivor: the directory ends at the cap.
+      assert.equal(left.length, 2, `expected the cap to hold, saw ${left.length}`);
+      assert.ok(
+        left.includes(basename(value.path)),
+        'pruning must never delete the capture it just returned',
+      );
+      assert.equal(left[0], buildCaptureName(new Date(Date.UTC(2020, 0, 1, 0, 0, 5)), 'abcde5'));
+    } finally {
+      await rm(pruneDir, { recursive: true, force: true });
+    }
+  });
+
   await test('reports a non-zero exit instead of writing an empty file', async () => {
     await assert.rejects(
       () => captureScreen(planCapture({ mode: 'display', display: 99 }), {
-        outputPath: '/tmp/dsh-screen-eye-should-not-exist.png',
+        outputPath: join(liveDir, 'should-not-exist.png'),
         signal: new AbortController().signal,
         timeoutMs: 20000,
       }),
@@ -409,6 +528,10 @@ await test('apply() registers nothing on a non-macOS host', () => {
     Object.defineProperty(process, 'platform', original);
   }
 });
+
+// Remove every capture the suite took. Done unconditionally, so a failing
+// case cannot leave PNGs of the user's screen in the temporary directory.
+await rm(liveDir, { recursive: true, force: true });
 
 process.stdout.write(`\n${passed} passed, ${failures.length} failed\n`);
 if (failures.length > 0) process.exitCode = 1;

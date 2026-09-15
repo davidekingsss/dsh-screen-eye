@@ -50,6 +50,12 @@ export const Config = z.object({
     .natural()
     .default(120000)
     .description('Cooperative time budget for one capture, including interactive modes.'),
+  keepRecent: z
+    .natural()
+    .default(50)
+    .description(
+      'How many of the newest captures to keep in outputDir. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. Only files this plugin wrote are ever removed. Set to 0 to keep everything.',
+    ),
   requireImageCapableModel: z
     .boolean()
     .default(true)

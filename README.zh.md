@@ -85,8 +85,13 @@ dsh plugin --profile web add link:/path/to/dsh-screen-eye
 | `outputDir` | `<DSH home>/screen-eye` | 截图 PNG 的落盘目录。 |
 | `locale` | `en` | 引导文案语言：`en` 或 `zh`。 |
 | `timeoutMs` | `120000` | 单次截图的协作式时间预算。 |
+| `keepRecent` | `50` | `outputDir` 里保留的最新截图数量。一张截图是几 MB 的 PNG，而用眼睛的 agent 会截很多张，所以这个目录默认是有上限的。设为 `0` 表示全部保留。 |
 | `requireImageCapableModel` | `true` | 当调用方模型未声明图片输入时直接拒绝，而不是返回一张它看不见的图。 |
 | `deleteAfterCommit` | `false` | 提交到附件存储后删除 PNG。默认关闭，以便返回的路径可再次读取。 |
+
+清理**只会删除本插件自己写出的文件**：`outputDir` 的直接子项、且文件名严格匹配
+本插件生成的形状（`shot-<时间戳>-<后缀>.png`）的普通文件。它绝不递归、绝不动
+其他命名规则的文件，也绝不会删掉刚刚返回给你的那一张。
 
 ```yaml
 # cordis.patch.yml
@@ -96,6 +101,7 @@ dsh plugin --profile web add link:/path/to/dsh-screen-eye
       config:
         locale: zh
         outputDir: /Users/me/Pictures/agent-shots
+        keepRecent: 200
 ```
 
 ## 实现
@@ -125,6 +131,8 @@ import**；`apply()` 再检查一次，使得绕过 patch 的直接挂载也无�
 Windows 不存在等价的权限闸门——任何进程都可以截屏，所以 Windows 引擎根本不
 需要引导流程。之所以没有包含它，是因为在本仓库的开发环境里无法测试它，而
 声明未经测试的平台支持，比明说边界更糟。
+[`docs/windows.md`](docs/windows.md) 记录了关于它的调研结论、一个朴素实现会
+踩到的坑，以及如果你想加，接缝在哪里。
 
 ## 环境要求
 

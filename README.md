@@ -95,8 +95,14 @@ All keys are optional.
 | `outputDir` | `<DSH home>/screen-eye` | Where captured PNGs are written. |
 | `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
 | `timeoutMs` | `120000` | Cooperative budget for one capture. |
+| `keepRecent` | `50` | How many of the newest captures to keep in `outputDir`. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. `0` keeps everything. |
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |
 | `deleteAfterCommit` | `false` | Delete the PNG once it is committed to the attachment store. Off by default, so the returned path stays re-readable. |
+
+Retention only ever removes files **this plugin wrote**: regular files, direct
+children of `outputDir`, whose names match the exact shape it generates
+(`shot-<timestamp>-<suffix>.png`). It is never recursive, it never touches
+another naming scheme, and it never removes the capture it just returned.
 
 ```yaml
 # cordis.patch.yml
@@ -106,6 +112,7 @@ All keys are optional.
       config:
         locale: zh
         outputDir: /Users/me/Pictures/agent-shots
+        keepRecent: 200
 ```
 
 ## How it works
@@ -138,6 +145,8 @@ Windows has no equivalent permission gate — any process may capture the screen
 so a Windows engine would need no onboarding flow at all. It is not included
 because it cannot be tested from this repository's development environment, and
 claiming untested platform support would be worse than declaring the limit.
+[`docs/windows.md`](docs/windows.md) records what was determined about it, the
+hazard a naive engine would hit, and where the seam is if you want to add it.
 
 ## Requirements
 
