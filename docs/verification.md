@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-87 cases, all passing. They run without a harness: the logic modules are
+90 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -103,6 +103,14 @@ What they cover:
   the plugin's own report contradicts;
 - the bundle patch carries the platform gate, and the package stays
   installable (`dsh.bundle` present, every required file in `files`);
+- the seam itself: that no OS-specific module is reachable from outside
+  `lib/platform/`, checked by walking the real import graph rather than by
+  trusting the rule — and the case was itself checked by adding a violating
+  import and watching it fail. Without it the seam lasts until the next
+  convenient import;
+- that every registered platform implements the whole contract, since a
+  half-implemented platform is worse than an absent one: it passes the gate and
+  fails at the first call;
 - that the patch's gate and the engine registry agree on every platform,
   evaluated by running the patch's own expression against the registry. They
   live where they cannot import each other, so this is the only thing keeping

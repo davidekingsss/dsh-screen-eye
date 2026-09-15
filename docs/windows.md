@@ -1,78 +1,76 @@
 # Windows
 
 This plugin is macOS-only. Windows is the obvious next platform, so this page
-records what was actually determined about it: what would be involved, what
-would be different, and why nothing was shipped.
+records what was actually determined about it: what the port involves, what
+differs, and why nothing has been shipped.
 
-## What is actually platform-specific
+## What is platform-specific, and what is not
 
-Measured rather than asserted, by counting macOS-specific references per module:
+The plugin is a platform-neutral core with an operating-system layer behind a
+seam. Measured by counting macOS references per module, the core is the
+majority: mode validation, burst planning, the frame interval as a cost lever,
+image content blocks, the attachment commit, retention, naming and the output
+contract contain no macOS reference at all.
 
-| platform-neutral | macOS-specific |
+Everything that does depend on the system is reachable through exactly one
+module, `lib/platform.mjs`, which selects an implementation by
+`process.platform`. The tool layer imports that and nothing else — a self-test
+case walks the real import graph and fails if any OS-specific module becomes
+reachable from outside the seam, because a seam survives exactly until the next
+convenient shortcut.
+
+The macOS implementation is `lib/platform/darwin.mjs`, and it provides three
+things:
+
+| member | macOS |
 | --- | --- |
-| `capture-name`, `image`, `retention`, `settings` — 455 lines, no macOS reference at all | `permission` (TCC), `displays` (`system_profiler`), the capture engine |
-| `png` and `exec` — one incidental mention each | `index`, `screenshot-tool`, `permission-tool` — the wiring and the two tool definitions |
-
-So the shape is a platform-neutral core with a macOS layer over it: burst
-timing, the image content blocks, retention, naming, the attachment commit and
-the output contract are all platform-independent, and the modes are declared
-once. A second engine would slot in under that seam rather than beside it.
-
-The boundary itself is defined in one place — the engine registry in
-`lib/capture.mjs` — and the runtime gate asks it rather than naming a platform.
-Only the bundle patch's `!!js` expression has to repeat the answer, because the
-loader evaluates it without access to the module, and a case in the self-test
-evaluates that expression against the registry on every run so the two cannot
-drift. That case was checked by making them disagree on purpose.
+| `capture(plan, outputPath, options)` | `screencapture` and its flags |
+| `listDisplays(options)` | `system_profiler SPDisplaysDataType` |
+| `permission` | the Screen Recording consent model |
 
 ## There is no equivalent permission gate
 
-The reason the macOS half of this plugin is mostly about permission is that
-macOS gates screen capture behind a user-granted, per-responsible-process
-consent, and denies silently when it cannot attribute the request — see
-`lib/permission.mjs`. Windows has nothing corresponding to that for a normal
-desktop process. `BitBlt` against the desktop device context, or
-`PrintWindow` against a window handle, needs no consent, no prompt and no
-entitlement.
+The reason the macOS half is mostly about permission is that macOS gates screen
+capture behind a user-granted, per-responsible-process consent, and denies
+silently when it cannot attribute the request — see `lib/permission.mjs`.
+Windows has nothing corresponding to that for a normal desktop process.
+`BitBlt` against the desktop device context, or `PrintWindow` against a window
+handle, needs no consent, no prompt and no entitlement.
 
-So the onboarding flow — `screen_permission`, the computed grant target, the
-deep link into System Settings — has no Windows counterpart to build. A Windows
-engine would be capture and nothing else.
+So the contract allows `permission: null`, and a platform that declares it
+registers no `screen_permission` tool at all: there would be nothing for it to
+report, and offering the model a question with no answer is worse than not
+offering it. That is the one place where the two platforms' tool surfaces
+legitimately differ.
 
-That is the whole of the good news, and it is worth being precise about the
-limit of this claim: it was established by reading the platform's model, not
-by running anything on Windows. It should be treated as a starting hypothesis
-to check on the first real machine, not as a verified fact.
+This was established by reading the platform's model, not by running anything on
+Windows. Treat it as a starting hypothesis to check on the first real machine,
+not as a verified fact.
 
-## What the engine would do
+## What a Windows implementation would have to do
 
-`lib/capture.mjs` already has the seam: engines are held in a registry keyed by
-`process.platform`, and `captureScreen` dispatches through it. Everything above
-that seam — argument validation, the output path, the attachment commit, image
-content blocks, retention — is platform-neutral and would not change.
-
-A Windows engine would need to:
-
-- run a capture through PowerShell, since the alternative is a compiled helper
-  and shipping binaries is exactly what the macOS engine avoids;
-- map the same four modes onto Win32 primitives, which do not correspond
-  one-to-one: `screen` and `display` are `CopyFromScreen` over a virtual-screen
-  rectangle, `region` is the same over a sub-rectangle, and `window` has no
-  interactive equivalent — there is no system-provided "click a window to
-  capture it" affordance, so it would have to enumerate windows itself and
-  either take a handle argument or pick by z-order;
-- decide what `select` means without a system region-picker overlay.
-
-Those three are design work, not typing, and they are the reason a Windows
-engine is not a mechanical port.
+- **Capture** through PowerShell, since the alternative is a compiled helper and
+  shipping binaries is exactly what the macOS implementation avoids.
+- **Map the four modes**, which do not correspond one-to-one: `screen` and
+  `display` are `CopyFromScreen` over a virtual-screen rectangle, `region` is
+  the same over a sub-rectangle, and `window` has no interactive equivalent —
+  there is no system-provided "click a window to capture it" affordance, so it
+  would have to enumerate windows itself and take a handle or pick by z-order.
+  `select` likewise has no system region picker to lean on. Those two are design
+  work, not typing.
+- **Enumerate displays**, reporting them main-first and indexed from 1 so the
+  index can be handed back to `capture` as `plan.display`. On macOS the proof
+  that this matters is that `-D 2` really does select the second screen; the
+  Windows equivalent needs the same check.
+- **Declare `permission: null`**, or something else if the session model turns
+  out to need reporting after all.
 
 ## One real hazard, and it is not a permission
 
-A Windows process that is not attached to the interactive session cannot
-capture it. A harness running as a service, or under a different session, would
-produce a black frame rather than an error — the failure looks like a
-successful capture of a black screen. That is the same *class* of problem as
-the macOS one (a capture that fails for a reason the tool did not cause) with a
+A Windows process that is not attached to the interactive session cannot capture
+it. A harness running as a service, or under a different session, would produce
+a black frame rather than an error — the failure looks like a successful capture
+of a black screen. That is the same *class* of problem as the macOS one, with a
 different cause, and it is worth stating because the naive engine would report
 it as success.
 
@@ -85,56 +83,27 @@ behaviour. Shipping an untested engine would put a claim in the README that
 nobody has falsified — which is the failure mode the market's review process
 exists to catch, and the one this project has been careful about elsewhere.
 
-The niche is also not empty: several plugins capture the Windows screen and
-were developed and tested there. Adding an untested fourth would not serve
-Windows users better than the tested ones already available.
+The niche is also not empty: several plugins capture the Windows screen and were
+developed and tested there. Adding an untested fourth would not serve Windows
+users better than the tested ones already available.
 
 ## If you want to add it
 
-**It is not as self-contained as an earlier revision of this page claimed.**
-The registry seam covers the capture engine and nothing else. Two other
-concerns are macOS modules wired straight into the tool layer, and a Windows
-engine would collide with both:
-
-- `lib/displays.mjs` hardcodes `/usr/sbin/system_profiler`, and both the
-  module and its pure ordering function are named after that tool. The ordering
-  logic is platform-neutral; where the inventory comes from is not.
-- `lib/permission.mjs` is TCC end to end — the denial string, the System
-  Settings deep link, the grant target, the onboarding text. None of those
-  concepts exists on Windows, where a process captures the screen without
-  asking anyone.
-- `lib/screenshot-tool.mjs` imports `listDisplays` and the permission module's
-  `DENIED` and `guidance` directly, so the macOS shapes reach the tool's error
-  path.
-
-So the port is mechanical only after those are seamed too, which is a design
-decision rather than typing. Two shapes are possible — a platform module
-providing capture, display enumeration and an optional permission gate, or
-per-platform modules resolved at the few call sites — and they differ in what
-a platform without a permission gate has to implement. That choice belongs to
-whoever does the port, with a Windows machine to check it against.
-
-Given that, the work is:
-
-1. Add a `captureWindows(plan, outputPath, options)` function in
-   `lib/capture.mjs` and register it under `'win32'`. This part is genuinely
-   just an engine: everything above it — mode validation, burst planning,
-   image blocks, retention, the output contract — is already platform-neutral
-   and already tested without a screen.
-2. Extend `screencaptureArgs`'s counterpart for PowerShell. Keep the mode
-   validation in `planCapture` unchanged — it is already platform-neutral.
-3. Nothing to do at runtime: `apply()` asks the engine registry whether the
-   host platform is served, so registering an engine is what enables it. The
-   one manual step is the `disabled: !!js` expression in `cordis.patch.yml`,
-   which the loader evaluates without access to the module — and a self-test
-   case fails if it disagrees with the registry.
+1. Write `lib/platform/win32.mjs` exporting an object with `id`, `capture`,
+   `listDisplays` and `permission`, per the contract documented in
+   `lib/platform.mjs`. That file is the whole specification, and
+   `lib/platform/darwin.mjs` is a worked example.
+2. Register it in the `PLATFORMS` map in `lib/platform.mjs`. That is what makes
+   the runtime gate open — `index.mjs` asks the registry rather than naming a
+   platform, so there is nothing else to enable.
+3. Update the `disabled: !!js` expression in `cordis.patch.yml` to match. This
+   is the one place that has to repeat the answer, because the loader evaluates
+   it without access to the module, and a self-test case evaluates it against
+   the registry on every run so the two cannot drift.
 4. Add the platform to the description and the README, and record in
    `docs/verification.md` what was run on which machine — including, if it
    applies, the session-isolation hazard above.
 
-None of this can be checked from macOS. The parts that can be — the seam, the
-mode and burst contract, the content blocks, retention — are covered by cases
-that run anywhere, and those are what a port would be built on.
-
-The self-test is written to skip its capture cases on a platform with no
-engine, so it will keep passing while the engine is added.
+Nothing in steps 1–4 can be checked from macOS. What can be — the seam itself,
+the mode and burst contract, the content blocks, retention, the output shapes —
+is covered by cases that run anywhere, which is what a port would be built on.

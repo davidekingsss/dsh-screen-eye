@@ -26,10 +26,10 @@ import {
   INTERACTIVE_MODES,
   MAX_BURST_FRAMES,
   captureScreen,
-  isSupportedPlatform,
   planCapture,
-  screencaptureArgs,
 } from '../lib/capture.mjs';
+import { isSupportedPlatform, platformFor, supportedPlatforms } from '../lib/platform.mjs';
+import { screencaptureArgs } from '../lib/platform/darwin.mjs';
 import { run } from '../lib/exec.mjs';
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values';
@@ -767,7 +767,7 @@ await test('every shape the screenshot tool returns satisfies its own schema', (
 });
 
 await test('every shape the permission tool returns satisfies its own schema', () => {
-  const tool = screenPermissionTool(resolveSettings({}));
+  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
   for (const [name, value] of Object.entries(permissionShapes())) {
     const problems = validateJsonSchemaValue(compiledOutput(tool), value);
     assert.deepEqual(problems, [], `${name} does not satisfy the declared schema: ${problems.join('; ')}`);
@@ -782,7 +782,7 @@ await test('every shape projects to lossless presentation metadata', () => {
   // rather than a re-implementation of it.
   const tools = {
     screenshot: [screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({})), screenshotShapes()],
-    screen_permission: [screenPermissionTool(resolveSettings({})), permissionShapes()],
+    screen_permission: [screenPermissionTool(platformFor().permission, resolveSettings({})), permissionShapes()],
   };
   for (const [toolName, [tool, shapes]] of Object.entries(tools)) {
     for (const [name, value] of Object.entries(shapes)) {
@@ -803,7 +803,7 @@ await test('every shape renders to content blocks the harness knows', () => {
   // silently rather than loudly.
   const tools = {
     screenshot: [screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({})), screenshotShapes()],
-    screen_permission: [screenPermissionTool(resolveSettings({})), permissionShapes()],
+    screen_permission: [screenPermissionTool(platformFor().permission, resolveSettings({})), permissionShapes()],
   };
   for (const [toolName, [tool, shapes]] of Object.entries(tools)) {
     for (const [name, value] of Object.entries(shapes)) {
@@ -922,7 +922,7 @@ await test('builds both tools with a model-facing description', () => {
   const screenshot = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
   assert.equal(screenshot.name, 'screenshot');
   assert.ok(screenshot.description.length > 100);
-  const permission = screenPermissionTool(resolveSettings({}));
+  const permission = screenPermissionTool(platformFor().permission, resolveSettings({}));
   assert.equal(permission.name, 'screen_permission');
 });
 
@@ -961,7 +961,7 @@ await test('refuses a capture when the model route cannot be resolved', async ()
 process.stdout.write('\nscreen_permission tool\n');
 
 await test('reports the live permission state and how to fix it', async () => {
-  const tool = screenPermissionTool(resolveSettings({}));
+  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
   const value = await tool.execute({}, stubExec());
   assert.equal(value.platform, process.platform);
   assert.equal(typeof value.authorized, 'boolean');
@@ -978,14 +978,14 @@ await test('reports the live permission state and how to fix it', async () => {
 });
 
 await test('defaults to action "check" when none is given', async () => {
-  const tool = screenPermissionTool(resolveSettings({}));
+  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
   const explicit = await tool.execute({ action: 'check' }, stubExec());
   assert.equal(typeof explicit.authorized, 'boolean');
   assert.equal(explicit.settingsOpened, undefined);
 });
 
 await test('renders both outcomes with the path the user must grant', () => {
-  const tool = screenPermissionTool(resolveSettings({}));
+  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
   const denied = tool.output.render({}, {
     platform: 'darwin',
     authorized: false,
@@ -1012,7 +1012,7 @@ await test('the guide never reports a state it did not observe', async () => {
   // unconditionally, so asking for guidance on a machine that already had the
   // grant was told it did not. A guidance path that invents the problem it is
   // guiding you through is worse than no guidance.
-  const tool = screenPermissionTool(resolveSettings({}));
+  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
   const value = await tool.execute({ action: 'guide' }, stubExec());
   assert.equal(typeof value.authorized, 'boolean');
 
@@ -1031,7 +1031,7 @@ await test('the guide never reports a state it did not observe', async () => {
 });
 
 await test('renders the settings-opened outcome without claiming authorisation', () => {
-  const tool = screenPermissionTool(resolveSettings({}));
+  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
   const [block] = tool.output.render({}, {
     platform: 'darwin',
     authorized: false,
@@ -1347,6 +1347,75 @@ await test('the package stays installable and publishable', async () => {
     assert.ok(manifest.files.includes(required), `${required} must ship in the tarball`);
   }
   assert.equal(manifest.main, 'index.mjs');
+});
+
+process.stdout.write('\nthe platform seam\n');
+
+await test('no OS-specific module is reached from outside the seam', async () => {
+  // A seam survives exactly until the next convenient import. Reading the
+  // permission module from a tool is easier than threading the platform model
+  // through it, and every such shortcut is one more place a port has to find —
+  // which is the failure this refactor exists to prevent. So the real import
+  // graph is walked rather than the rule being trusted.
+  const osSpecific = ['permission.mjs', 'displays.mjs', 'platform/darwin.mjs'];
+  const allowed = new Set(['lib/platform.mjs', 'lib/platform/darwin.mjs']);
+
+  const libDir = new URL('../lib/', import.meta.url);
+  const platformDir = new URL('../lib/platform/', import.meta.url);
+  const files = [
+    'index.mjs',
+    ...(await readdir(libDir)).filter((name) => name.endsWith('.mjs')).map((name) => `lib/${name}`),
+    ...(await readdir(platformDir)).filter((name) => name.endsWith('.mjs')).map((name) => `lib/platform/${name}`),
+  ];
+
+  const offenders = [];
+  for (const file of files) {
+    if (allowed.has(file)) continue;
+    const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+    for (const [, specifier] of source.matchAll(/from\s+'([^']+)'/gu)) {
+      if (osSpecific.some((name) => specifier.endsWith(name))) {
+        offenders.push(`${file} imports ${specifier}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `OS-specific modules are reachable from outside the seam:\n  ${offenders.join('\n  ')}`,
+  );
+});
+
+await test('every registered platform implements the whole contract', () => {
+  // A half-implemented platform is worse than an absent one: it passes the
+  // gate and fails at the first call. The contract is described in
+  // lib/platform.mjs; this is the part of it a machine can check.
+  assert.ok(supportedPlatforms().length > 0, 'a registry with no platforms serves nobody');
+  for (const id of supportedPlatforms()) {
+    const platform = platformFor(id);
+    assert.equal(platform.id, id, 'a platform must report the id it is registered under');
+    for (const method of ['capture', 'listDisplays']) {
+      assert.equal(typeof platform[method], 'function', `${id} does not implement ${method}()`);
+    }
+    assert.ok('permission' in platform, `${id} does not declare permission, not even as null`);
+    if (platform.permission === null) continue;
+    for (const method of ['probe', 'openSettings', 'grantTarget', 'guidance', 'describeFailure']) {
+      assert.equal(
+        typeof platform.permission[method],
+        'function',
+        `${id} declares a permission but does not implement ${method}()`,
+      );
+    }
+  }
+});
+
+await test('asking for an unserved platform is a bug, and says so', () => {
+  // The gate in index.mjs is supposed to make this unreachable, so the error
+  // names what is served rather than being handled as a runtime condition.
+  assert.throws(() => platformFor('plan9'), /no implementation for platform "plan9"/u);
+  assert.match(
+    (() => { try { platformFor('plan9'); } catch (error) { return error.message; } })(),
+    new RegExp(supportedPlatforms().join('|'), 'u'),
+  );
 });
 
 process.stdout.write('\nplugin wiring\n');

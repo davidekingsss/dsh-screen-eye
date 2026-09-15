@@ -20,7 +20,7 @@
 
 import z from '@deepseek-ai/schemastery';
 
-import { isSupportedPlatform } from './lib/capture.mjs';
+import { isSupportedPlatform, platformFor } from './lib/platform.mjs';
 import { screenPermissionTool } from './lib/permission-tool.mjs';
 import { screenshotTool } from './lib/screenshot-tool.mjs';
 import { resolveSettings } from './lib/settings.mjs';
@@ -140,7 +140,19 @@ export function apply(ctx, config = {}) {
   // first so that a later failure has somewhere to be reported from, and it
   // reads this array at call time rather than at build time.
   const issues = [];
-  registerTool(ctx, log, screenPermissionTool(settings, issues), 'screen_permission', issues);
+  const platform = platformFor();
+  // No gate means no tool. A platform where capture needs no consent has
+  // nothing for `screen_permission` to report, and registering it anyway would
+  // offer the model a question with no answer.
+  if (platform.permission !== null) {
+    registerTool(
+      ctx,
+      log,
+      screenPermissionTool(platform.permission, settings, issues),
+      'screen_permission',
+      issues,
+    );
+  }
 
   // `screenshot` exists only while a durable attachment store is mounted:
   // without one there is nowhere to commit the image, and handing back a bare
