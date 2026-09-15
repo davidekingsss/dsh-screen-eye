@@ -3,17 +3,28 @@
  *
  * One call captures the screen *and* returns the picture, so the agent can
  * look at what is on screen on its own initiative instead of asking the user
- * to take a screenshot. It is macOS-only by construction: the capture engine,
- * the permission model and the onboarding flow are all macOS facts.
+ * to take a screenshot. It is macOS-only today, but by construction rather
+ * than by accident: everything OS-specific sits behind the platform seam, so
+ * the plugin is a platform-neutral core with one implementation behind it.
  *
  * Layout:
  * - `lib/screenshot-tool.mjs` — the `screenshot` tool.
  * - `lib/permission-tool.mjs` — the `screen_permission` tool.
- * - `lib/capture.mjs`         — capture engines, registered per platform.
- * - `lib/permission.mjs`      — Screen Recording detection and onboarding.
+ * - `lib/platform.mjs`        — the platform seam: selects an implementation
+ *                               and documents the contract one must meet.
+ * - `lib/platform/darwin.mjs` — the macOS implementation, and the only place
+ *                               an OS-specific module is imported from.
+ * - `lib/capture.mjs`         — modes, argument validation and the burst loop;
+ *                               dispatches one frame to the platform.
  * - `lib/image.mjs`           — image content blocks, mirroring `read_image`.
  * - `lib/settings.mjs`        — config defaults and output paths.
+ * - `lib/retention.mjs`       — bounds the capture directory.
+ * - `lib/png.mjs`             — reading and rewriting PNG headers.
  * - `lib/exec.mjs`            — cancellable child-process execution.
+ *
+ * `lib/permission.mjs` and `lib/displays.mjs` are macOS too, and are imported
+ * only by `lib/platform/darwin.mjs` — a self-test case fails if anything
+ * outside the seam reaches them.
  *
  * @module dsh-screen-eye
  */
