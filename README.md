@@ -21,7 +21,13 @@ a monitor placed to the left of or above the main one is reachable), or the
 interactive `window` / `select`, which wait for the user to click a window or
 drag a rectangle.
 
-Every call returns **exactly one image**. That is a deliberate constraint rather
+Set `frames` above 1 and the call takes that many captures `interval_ms` apart
+and returns them all, which is how something that changes over time can be
+seen. This is deliberately not a GIF: the harness stores images single-frame,
+so an animated GIF arrives as its first frame. [`docs/motion.md`](docs/motion.md)
+has the evidence and the reasoning.
+
+Every other call returns **exactly one image**. That is a deliberate constraint rather
 than a limitation of the system: `screencapture` writes *one file per screen*,
 so an unqualified capture on a multi-display Mac would produce several files
 while this pipeline resolves and reads a single path — leaving the others behind
@@ -104,6 +110,7 @@ All keys are optional.
 | `outputDir` | `<DSH home>/screen-eye` | Where captured PNGs are written. |
 | `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
 | `timeoutMs` | `120000` | Cooperative budget for one capture. |
+| `frames` / `interval_ms` | `1` / `200` | Frames per call and the target gap between them. At most 10 frames, because they share the harness's per-message image budget. |
 | `maxDimension` | `8192` | Largest side, in pixels, a capture may have. The provider caps an image side at 8192 (4096 once a request carries fifteen or more images) and the attachment store caps it at 8192 as well; a single display never reaches either. A capture over the cap is refused with its size named. |
 | `keepRecent` | `50` | How many of the newest captures to keep in `outputDir`. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. `0` keeps everything. |
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |

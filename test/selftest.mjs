@@ -21,7 +21,9 @@ import { buildCaptureName, captureStamp, isCaptureName } from '../lib/capture-na
 import {
   CAPTURE_MODES,
   CaptureError,
+  DEFAULT_BURST_INTERVAL_MS,
   INTERACTIVE_MODES,
+  MAX_BURST_FRAMES,
   captureScreen,
   isSupportedPlatform,
   planCapture,
@@ -388,6 +390,68 @@ await test('rejects a zero dimension instead of reporting it', () => {
   assert.throws(() => pngDimensions(pngHeader(100, 0)), /malformed PNG/u);
 });
 
+process.stdout.write('\nburst\n');
+
+await test('rejects frame counts outside what one call may take', () => {
+  for (const frames of [0, -1, 1.5, 'three']) {
+    assert.throws(() => planCapture({ frames }), /positive integer/u, `frames=${frames}`);
+  }
+  assert.throws(() => planCapture({ frames: MAX_BURST_FRAMES + 1 }), /above the 10/u);
+  assert.equal(planCapture({ frames: MAX_BURST_FRAMES }).frames, MAX_BURST_FRAMES);
+  assert.equal(planCapture({}).frames, 1, 'a plain capture is one frame');
+});
+
+await test('refuses to repeat an interactive mode automatically', () => {
+  // "select" waits for a person to drag a rectangle; repeating it unattended
+  // would ask that person to do it once per frame.
+  assert.throws(() => planCapture({ mode: 'select', frames: 3 }), /waits for the user/u);
+  assert.throws(() => planCapture({ mode: 'window', frames: 2 }), /waits for the user/u);
+  assert.equal(planCapture({ mode: 'select' }).frames, 1);
+});
+
+await test('validates the burst interval and defaults it', () => {
+  assert.throws(() => planCapture({ frames: 2, interval_ms: 0 }), /interval_ms/u);
+  assert.throws(() => planCapture({ frames: 2, interval_ms: 1.5 }), /interval_ms/u);
+  assert.equal(planCapture({ frames: 2 }).intervalMs, DEFAULT_BURST_INTERVAL_MS);
+  assert.equal(planCapture({ frames: 2, interval_ms: 500 }).intervalMs, 500);
+});
+
+await test('renders a burst as one envelope and one image block per frame', () => {
+  const frame = (n) => ({
+    path: `/tmp/shot-${n}.png`,
+    capturedAt: '2026-09-15T00:00:00.000Z',
+    image: { attachmentId: `id${n}`, mediaType: 'image/png', bytes: 100 + n, width: 800, height: 600 },
+  });
+  const blocks = imageContent({
+    mode: 'region',
+    path: '/tmp/shot-1.png',
+    capturedAt: '2026-09-15T00:00:00.000Z',
+    frames: [frame(1), frame(2), frame(3)],
+    spacingMs: 200,
+  });
+  assert.equal(blocks.length, 4, 'one envelope plus three images');
+  assert.equal(blocks[0].type, 'text');
+  assert.match(blocks[0].text, /frames=3/u);
+  assert.match(blocks[0].text, /about 200ms apart/u);
+  assert.match(blocks[0].text, /1\. \/tmp\/shot-1\.png/u);
+  assert.match(blocks[0].text, /3\. \/tmp\/shot-3\.png/u);
+  assert.deepEqual(
+    blocks.slice(1).map((block) => block.attachment.attachmentId),
+    ['id1', 'id2', 'id3'],
+  );
+  assert.ok(blocks.slice(1).every((block) => block.type === 'image'));
+});
+
+await test('a single capture keeps its original one-image shape', () => {
+  const blocks = imageContent({
+    path: '/tmp/a.png',
+    mode: 'screen',
+    capturedAt: 'now',
+    image: { attachmentId: 'a', mediaType: 'image/png', bytes: 1, width: 10, height: 10 },
+  });
+  assert.equal(blocks.length, 2, 'burst support must not change the single-capture contract');
+});
+
 process.stdout.write('\nchild process execution\n');
 
 await test('returns the exit code and both streams', async () => {
@@ -749,6 +813,41 @@ if (!probe.authorized) {
     const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), settings);
     const value = await tool.execute({ mode: 'region', region: '0,0,64,48' }, stubExec());
     assert.equal(value.mode, 'region');
+  });
+
+  await test('takes a real burst and returns every frame in one call', async () => {
+    const attachments = stubAttachments();
+    const tool = screenshotTool(
+      stubCtx({ attachments }),
+      resolveSettings({ ...liveSettings, keepRecent: 0 }),
+    );
+    const value = await tool.execute(
+      { mode: 'region', region: '0,0,320,200', frames: 3, interval_ms: 200 },
+      stubExec(),
+    );
+
+    assert.equal(value.frames.length, 3);
+    assert.equal(value.image, undefined, 'a burst reports frames, not one image');
+    assert.equal(attachments.saved.length, 3, 'every frame must be committed');
+    assert.ok(Number.isInteger(value.spacingMs), 'the achieved spacing must be reported');
+
+    // A capture costs about 170ms, so a 200ms target is meetable; the check is
+    // loose enough not to flake on a loaded machine but tight enough to catch a
+    // burst that ignored the interval or serialised far slower than measured.
+    assert.ok(
+      value.spacingMs >= 150 && value.spacingMs <= 1200,
+      `achieved spacing was ${value.spacingMs}ms`,
+    );
+
+    const names = value.frames.map((frame) => basename(frame.path));
+    assert.equal(new Set(names).size, 3, 'each frame needs its own file');
+    assert.ok(
+      names.every(isCaptureName),
+      'frames must keep the shape retention recognises, or a burst would grow without bound',
+    );
+
+    const blocks = tool.output.render({}, value);
+    assert.equal(blocks.length, 4, 'one text envelope and three images');
   });
 
   await test('reports a non-zero exit instead of writing an empty file', async () => {

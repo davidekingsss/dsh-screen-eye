@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-62 cases, all passing. They run without a harness: the logic modules are
+68 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -37,6 +37,13 @@ What they cover:
   are applied on different paths and a silent drift would make behaviour
   depend on how the plugin loaded;
 - the image content blocks, including the downscale multiplier;
+- bursts: the frame-count bounds, that an interactive mode cannot be repeated
+  unattended, the interval default and validation, and — against the real
+  screen — that three frames come back in one call as three committed images
+  at three distinct paths, all of which keep the shape retention recognises,
+  rendering as one envelope plus three image blocks. A separate case pins that
+  a single capture still renders as one image, so burst support did not quietly
+  change the ordinary contract;
 - PNG geometry read straight from the file header — a real size, a buffer too
   short to hold one, a right-sized buffer that is not a PNG, a PNG whose first
   chunk is not `IHDR`, and a zero dimension — plus the `maxDimension` guard
