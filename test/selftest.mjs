@@ -1341,7 +1341,9 @@ await test('the package stays installable and publishable', async () => {
   // Declaring only `dsh.client` is the single most common reason a plugin is
   // rejected by the market: `dsh.bundle` is what makes it installable.
   assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml');
-  for (const required of ['index.mjs', 'lib/', 'cordis.patch.yml', 'README.md', 'LICENSE']) {
+    // docs/ is in the list because both READMEs link into it: dropping it would
+  // publish a package whose own documentation links point at nothing.
+  for (const required of ['index.mjs', 'lib/', 'docs/', 'cordis.patch.yml', 'README.md', 'LICENSE']) {
     assert.ok(manifest.files.includes(required), `${required} must ship in the tarball`);
   }
   assert.equal(manifest.main, 'index.mjs');
