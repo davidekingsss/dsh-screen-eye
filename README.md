@@ -1,10 +1,11 @@
 # dsh-screen-eye
 
-An autonomous eye for DeepSeek Harness on macOS: the agent captures the screen
-and receives the picture **in the same tool call**, so it can look at a running
-app, a dialog, an error or its own UI work without asking you for a screenshot.
+An autonomous eye for DeepSeek Harness on macOS and Windows: the agent captures
+the screen and receives the picture **in the same tool call**, so it can look at
+a running app, a dialog, an error or its own UI work without asking you for a
+screenshot.
 
-macOS only. No native build step, no bundled binary, no dependencies.
+No native build step, no bundled binary, no dependencies.
 
 ## What it adds
 
@@ -13,14 +14,16 @@ Two model-callable tools:
 | Tool | What it does |
 |---|---|
 | `screenshot` | Captures the screen and returns the image itself, as an `image` content block the model can see. |
-| `screen_permission` | Reports whether macOS currently allows this process to capture, and with `action: "guide"` opens the exact System Settings pane and hands over the path to grant. |
+| `screen_permission` | On macOS: reports whether this process is currently allowed to capture, and with `action: "guide"` opens the exact System Settings pane and hands over the path to grant. Not registered on Windows, which has no such permission to report. |
 
 `mode` selects what is captured: `screen` (default, the main display), `display`
-(one display, by index), `region` (a rectangle, whose origin may be negative so
-a monitor placed to the left of or above the main one is reachable), `displays`
-(which captures nothing and lists the connected screens with the index `display`
-expects), or the interactive `window` / `select`, which wait for the user to
-click a window or drag a rectangle.
+(one display, by index), `region` (a rectangle, whose origin is the top-left of
+the main display, so a monitor placed to the left of or above it takes negative
+coordinates), `displays` (which captures nothing and lists the connected screens
+with the index `display` expects and, on Windows, where each one starts), or the
+interactive `window` / `select`, which wait for the user to click a window or
+drag a rectangle. Windows has no system region picker, so there `select` is
+refused with that explanation and `window` means the window already in front.
 
 Set `frames` above 1 and the call takes that many captures `interval_ms` apart
 and returns them all, which is how something that changes over time can be
@@ -46,7 +49,6 @@ and `display` selects another.
 
 Most screenshot tooling assumes the hard part is capturing pixels. On macOS the
 hard part is **permission**, and it fails in a way that looks like a bug:
-
 ```
 screencapture: could not create image from display
 ```
@@ -73,6 +75,11 @@ what is actually possible:
 - and it returns those steps as the tool result, so the agent can hand you a
   fix rather than a stack trace.
 
+Windows has no such gate, and no such story: the hard part there is that the
+capture can *succeed* and still be useless — a downscaled copy of the screen if
+the process is DPI-unaware, or a black frame if it is not attached to the
+interactive desktop. Both are answered in [Windows](#windows) below.
+
 ## Install
 
 ```sh
@@ -80,16 +87,19 @@ dsh plugin --profile web add github:davidekingsss/dsh-screen-eye
 # then restart dsh
 ```
 
+The same command installs it on macOS and on Windows; the platform layer picks
+the engine.
+
 From a local checkout, instead of a published source:
 
 ```sh
-dsh plugin --profile web add link:/path/to/dsh-screen-eye
+dsh plugin --profile web add -w link:/path/to/dsh-screen-eye
 ```
 
 The plugin has no build step and no dependencies, so nothing is compiled at
 install time.
 
-## Grant Screen Recording (once)
+## Grant Screen Recording (macOS, once)
 
 Call `screenshot` once. If permission is missing, the result tells you exactly
 what to do, and `screen_permission` with `action: "guide"` walks through it:
@@ -109,6 +119,8 @@ instead has the same effect.
 
 > macOS may periodically ask you to re-confirm this permission. Re-enabling the
 > same switch is enough.
+
+Windows needs none of this — see [Windows](#windows).
 
 ## Configuration
 
@@ -138,13 +150,15 @@ asked for.
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |
 | `deleteAfterCommit` | `false` | Delete the PNG once it is committed to the attachment store. Off by default, so the returned path stays re-readable. |
 
-Captures are committed **without** the ICC profile, EXIF and iTXt records macOS
-attaches to every screenshot, while the file on disk keeps them. Those records
-are what decide whether the attachment store keeps the bytes or re-encodes
-them — carrying metadata disqualifies an image from pass-through — so removing
-them is what lets a capture reach the model losslessly instead of as WebP at
-quality 85. The store converts to sRGB either way, so nothing that survives is
-lost. The file you can open keeps its colour profile.
+Captures are committed **without** the records that would disqualify them from
+lossless storage. On macOS that means stripping the ICC profile, EXIF and iTXt
+records `screencapture` attaches to every shot, while the file on disk keeps
+them; those records decide whether the attachment store keeps the bytes or
+re-encodes them, so removing them is what lets a capture be stored as written
+instead of as WebP at quality 85. On Windows there is nothing to strip: GDI+
+writes none of them, so a capture already satisfies the store's condition. The
+store converts to sRGB either way, so nothing that survives is lost, and the
+file you can open keeps its colour profile.
 
 Retention only ever removes files **this plugin wrote**: regular files, direct
 children of `outputDir`, whose names match the exact shape it generates
@@ -165,8 +179,9 @@ another naming scheme, and it never removes the capture it just returned.
 ## How it works
 
 ```
-screenshot tool ──▶ lib/capture.mjs ──▶ /usr/sbin/screencapture ──▶ PNG
-                       │
+screenshot tool ──▶ lib/capture.mjs ──▶ the platform engine ──▶ PNG
+                       │                   macOS: screencapture
+                       │                   Windows: PowerShell + System.Drawing
                        └──▶ attachments.saveImage() ──▶ image content block ──▶ model
 ```
 
@@ -179,12 +194,14 @@ cannot save a token, and resizing here would insert one more scale between what
 the model measures in the image and the screen coordinates `region` expects,
 which is the mapping the zoom workflow depends on.
 
-The capture shells out to the system `screencapture(1)` rather than shipping a
-private helper. That choice is deliberate: `screencapture` needs no compiled
-artefact, is Apple-signed, and already uses ScreenCaptureKit internally on
-current macOS. A private helper would instead require per-architecture builds
-and an ad-hoc signature whose hash changes on every rebuild — and a changed
-hash silently invalidates the user's Screen Recording grant.
+Neither engine ships a binary. On macOS the capture shells out to the system
+`screencapture(1)`, which needs no compiled artefact, is Apple-signed, and
+already uses ScreenCaptureKit internally; a private helper would need
+per-architecture builds and an ad-hoc signature whose hash changes on every
+rebuild, and a changed hash silently invalidates the user's Screen Recording
+grant. On Windows it shells out to Windows PowerShell 5.1 — present on every
+install — driving `System.Drawing` through a shim compiled in memory for the
+length of one call.
 
 The image reaches the model through the same attachment path the built-in
 `read_image` tool uses, so the value is validated, downscaled and replayed
@@ -192,22 +209,43 @@ exactly like any other image in the session.
 
 ## Platform support
 
-macOS only, enforced in two places: the bundle patch carries
-`disabled: !!js process.platform !== 'darwin'`, so on another platform the
-module is never imported, and `apply()` re-checks so a direct mount cannot
-register capture tools that have no engine.
+macOS and Windows, enforced in two places: the bundle patch carries
+`disabled: !!js process.platform !== 'darwin' && process.platform !== 'win32'`,
+so on any other platform the module is never imported, and `apply()` re-checks
+so a direct mount cannot register capture tools that have no engine.
 
-Windows has no equivalent permission gate — any process may capture the screen,
-so a Windows engine would need no onboarding flow at all. It is not included
-because it cannot be tested from this repository's development environment, and
-claiming untested platform support would be worse than declaring the limit.
-[`docs/windows.md`](docs/windows.md) records what was determined about it, the
-hazard a naive engine would hit, and where the seam is if you want to add it.
+## Windows
+
+Windows needs no permission and no onboarding — any process attached to the
+interactive desktop may capture it — so `screen_permission` is not registered
+there at all, and `screenshot` is the whole tool surface. Four things are
+genuinely different from macOS, and each is answered rather than documented
+away; [`docs/windows.md`](docs/windows.md) has the measurements.
+
+- **Scale.** Windows PowerShell is DPI-unaware, and a DPI-unaware process gets a
+  *downscaled* copy of the desktop: on a 3840x2160 panel at 125% it reports and
+  captures 3072x1728. The engine declares per-monitor awareness before it reads
+  anything, and captures the true pixels.
+- **A blind session.** A process that is not attached to the interactive window
+  station does not fail — `CopyFromScreen` returns black, which a naive engine
+  reports as a successful capture of a black screen. The engine checks the
+  window station and session first and refuses by name, and a frame that is
+  black everywhere is returned *with a note* saying what that usually means.
+- **Bursts.** A Windows capture costs about a second, almost regardless of area,
+  because the engine pays a PowerShell start per call. Taking a six-frame burst
+  as six calls would sample a 400ms animation over six seconds, so Windows takes
+  the whole burst in one engine call and the interval in the plan becomes
+  reachable.
+- **`select`.** Windows ships no system region picker, so that mode is refused
+  with the reason and `region` suggested; `window` captures the window already in
+  front, since there is nothing to click either.
 
 ## Requirements
 
-- macOS with the harness's Node runtime (the capture path needs no extra
-  package).
+- macOS or Windows, with the harness's Node runtime. Neither capture path needs
+  an extra package, and neither compiles anything at install time.
+- On macOS, Screen Recording permission for the process running the harness
+  (see above). Windows needs no grant.
 - A model route that declares image input. With `requireImageCapableModel`
   left at its default, a text-only route is refused up front with a message
   naming the model, instead of silently capturing something the model cannot
@@ -222,9 +260,15 @@ node test/selftest.mjs
 
 The suite runs without a harness: the logic modules are imported directly and
 the tool definitions are exercised through a stubbed context, so it works on a
-machine that has never seen the harness — which is also what CI does. Cases
-that capture for real run only when the machine already has Screen Recording
-permission, so the suite stays green before the grant too.
+machine that has never seen the harness — which is also what CI does, on macOS
+and on Windows. Cases that capture for real run only when the machine can
+actually see its own screen — Screen Recording granted on macOS, a visible
+desktop on Windows — so the suite stays green before the grant too.
+
+Cases about one platform's own model are asked of that model rather than of the
+host, so the Windows engine's script is asserted on macOS CI and the macOS
+permission text is asserted on Windows. That is deliberate: a seam is only worth
+having if something checks the other side of it.
 
 The three `@deepseek-ai/*` packages the plugin imports are pinned exactly in
 `devDependencies`, and that is deliberate: they publish the current line under
@@ -232,8 +276,8 @@ the `next` dist-tag while their `latest` tag still points at a much older
 release, so an unpinned install resolves to the old one and the import fails.
 
 [`docs/verification.md`](docs/verification.md) records what has actually been
-run — the self-test, loader acceptance in an isolated profile, and one
-end-to-end agent turn — and what each result does and does not prove.
+run — the self-test on both platforms, loader acceptance in an isolated profile,
+and end-to-end agent turns — and what each result does and does not prove.
 
 ## License
 

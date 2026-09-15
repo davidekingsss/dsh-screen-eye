@@ -1,12 +1,16 @@
 # dsh bundle layer: mount dsh-screen-eye.
 #
-# The platform gate lives here rather than only in `apply()` so that on a
-# non-macOS host the module is never even imported — no code runs, no tools
-# are registered, nothing to go wrong. `disabled` with a `!!js` expression is
-# the mechanism dsh-base itself uses for its own platform-conditional entries.
-# `apply()` still re-checks, so a direct mount that bypasses this patch cannot
-# register capture tools on a platform that has no capture engine.
+# The platform gate lives here rather than only in `apply()` so that on a host
+# with no capture engine the module is never even imported — no code runs, no
+# tools are registered, nothing to go wrong. `disabled` with a `!!js` expression
+# is the mechanism dsh-base itself uses for its own platform-conditional
+# entries. `apply()` still re-checks, so a direct mount that bypasses this patch
+# cannot register capture tools on a platform that has no capture engine.
+#
+# The expression is a second copy of what `lib/platform.mjs` decides, because
+# the loader evaluates it without access to the module; a self-test evaluates
+# this exact line against the registry on every run, so the two cannot drift.
 - insert:
     - id: screen-eye
       name: dsh-screen-eye
-      disabled: !!js process.platform !== 'darwin'
+      disabled: !!js process.platform !== 'darwin' && process.platform !== 'win32'

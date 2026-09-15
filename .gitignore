@@ -9,3 +9,7 @@ node_modules
 
 # Screenshots produced by running the test suite locally.
 *.png
+
+# Scratch space: probes, prototypes and one-off measurement scripts written
+# while working on the platform engines. Nothing here is part of the plugin.
+.scratch/

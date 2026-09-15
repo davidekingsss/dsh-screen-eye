@@ -6,6 +6,14 @@ name: test
 # installed from the registry instead, which also proves the package is
 # self-contained enough to test on a machine that has never seen the harness.
 #
+# Both platforms the plugin serves are tested, because the point of the seam is
+# that one of them can be changed without the other noticing — and that claim is
+# only worth anything if something checks the other one afterwards. The Windows
+# job runs the whole suite, including the cases that build and assert the
+# Windows engine's PowerShell without running it: those execute on macOS too,
+# and the live captures skip themselves on a runner with no interactive
+# desktop, which is what a hosted CI machine is.
+#
 # The versions are pinned exactly and deliberately. These packages publish the
 # current line under the `next` dist-tag, and their `latest` tag still points at
 # a much older release: an unpinned install silently resolves to the old one and
@@ -17,8 +25,18 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  macos:
     runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: node test/selftest.mjs
+
+  windows:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

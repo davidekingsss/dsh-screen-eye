@@ -1,19 +1,20 @@
 /**
- * dsh-screen-eye — an autonomous eye for DeepSeek Harness on macOS.
+ * dsh-screen-eye — an autonomous eye for DeepSeek Harness.
  *
  * One call captures the screen *and* returns the picture, so the agent can
  * look at what is on screen on its own initiative instead of asking the user
- * to take a screenshot. It is macOS-only today, but by construction rather
- * than by accident: everything OS-specific sits behind the platform seam, so
- * the plugin is a platform-neutral core with one implementation behind it.
+ * to take a screenshot. It serves macOS and Windows, and does so by
+ * construction rather than by accident: everything OS-specific sits behind the
+ * platform seam, so the plugin is a platform-neutral core with one
+ * implementation behind it per system.
  *
  * Layout:
  * - `lib/screenshot-tool.mjs` — the `screenshot` tool.
  * - `lib/permission-tool.mjs` — the `screen_permission` tool.
  * - `lib/platform.mjs`        — the platform seam: selects an implementation
  *                               and documents the contract one must meet.
- * - `lib/platform/darwin.mjs` — the macOS implementation, and the only place
- *                               an OS-specific module is imported from.
+ * - `lib/platform/darwin.mjs` — the macOS implementation.
+ * - `lib/platform/win32.mjs`  — the Windows implementation.
  * - `lib/capture.mjs`         — modes, argument validation and the burst loop;
  *                               dispatches one frame to the platform.
  * - `lib/image.mjs`           — image content blocks, mirroring `read_image`.
@@ -24,7 +25,7 @@
  *
  * `lib/permission.mjs` and `lib/displays.mjs` are macOS too, and are imported
  * only by `lib/platform/darwin.mjs` — a self-test case fails if anything
- * outside the seam reaches them.
+ * outside the seam reaches them, or any other OS-specific module.
  *
  * @module dsh-screen-eye
  */

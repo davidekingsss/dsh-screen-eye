@@ -28,8 +28,22 @@ import {
   captureScreen,
   planCapture,
 } from '../lib/capture.mjs';
-import { isSupportedPlatform, platformFor, supportedPlatforms } from '../lib/platform.mjs';
-import { screencaptureArgs } from '../lib/platform/darwin.mjs';
+import { describeCaptureFailure, isSupportedPlatform, platformFor, supportedPlatforms } from '../lib/platform.mjs';
+import { darwin, screencaptureArgs } from '../lib/platform/darwin.mjs';
+import {
+  BLACK_FRAME_PERMILLE,
+  NO_SESSION,
+  RESULT_MARKER,
+  burstScript,
+  captureScript,
+  displaysFromScreens,
+  displaysScript,
+  notesForFrame,
+  parseScriptResult,
+  powershellArgs,
+  powershellPath,
+  win32,
+} from '../lib/platform/win32.mjs';
 import { run } from '../lib/exec.mjs';
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values';
@@ -49,6 +63,21 @@ import { screenPermissionTool } from '../lib/permission-tool.mjs';
 import { capturesToRemove, pruneCaptures } from '../lib/retention.mjs';
 import { captureFailureError, screenshotTool } from '../lib/screenshot-tool.mjs';
 import { resolveOutputPath, resolveSettings } from '../lib/settings.mjs';
+
+/**
+ * The macOS permission model, named rather than looked up.
+ *
+ * The macOS-specific cases below are about what that model does, not about
+ * which machine is running them: the classification, the onboarding text and
+ * the permission tool all have to be assertable from a Windows checkout and
+ * from CI. Where a case is genuinely about *this* machine — a live probe, a
+ * real capture — it says so and skips itself instead.
+ */
+const MACOS = darwin.permission;
+
+/** Whether this checkout is being tested on the system it is running on. */
+const ON_MACOS = process.platform === 'darwin';
+const ON_WINDOWS = process.platform === 'win32';
 
 let passed = 0;
 const failures = [];
@@ -767,7 +796,7 @@ await test('every shape the screenshot tool returns satisfies its own schema', (
 });
 
 await test('every shape the permission tool returns satisfies its own schema', () => {
-  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
+  const tool = screenPermissionTool(MACOS, resolveSettings({}));
   for (const [name, value] of Object.entries(permissionShapes())) {
     const problems = validateJsonSchemaValue(compiledOutput(tool), value);
     assert.deepEqual(problems, [], `${name} does not satisfy the declared schema: ${problems.join('; ')}`);
@@ -782,7 +811,7 @@ await test('every shape projects to lossless presentation metadata', () => {
   // rather than a re-implementation of it.
   const tools = {
     screenshot: [screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({})), screenshotShapes()],
-    screen_permission: [screenPermissionTool(platformFor().permission, resolveSettings({})), permissionShapes()],
+    screen_permission: [screenPermissionTool(MACOS, resolveSettings({})), permissionShapes()],
   };
   for (const [toolName, [tool, shapes]] of Object.entries(tools)) {
     for (const [name, value] of Object.entries(shapes)) {
@@ -803,7 +832,7 @@ await test('every shape renders to content blocks the harness knows', () => {
   // silently rather than loudly.
   const tools = {
     screenshot: [screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({})), screenshotShapes()],
-    screen_permission: [screenPermissionTool(platformFor().permission, resolveSettings({})), permissionShapes()],
+    screen_permission: [screenPermissionTool(MACOS, resolveSettings({})), permissionShapes()],
   };
   for (const [toolName, [tool, shapes]] of Object.entries(tools)) {
     for (const [name, value] of Object.entries(shapes)) {
@@ -820,8 +849,27 @@ await test('every shape renders to content blocks the harness knows', () => {
 
 process.stdout.write('\nchild process execution\n');
 
+/**
+ * A child that runs JavaScript, whichever system the suite is on.
+ *
+ * These cases are about `run()` — that it captures both streams, reports the
+ * exit code, and actually kills what it started — so the child has to be
+ * something every platform has. The Node binary running the suite is the one
+ * thing that is always there, and it makes the marker files that prove a kill
+ * work identically on Windows and on macOS, where `/bin/sh` would not.
+ *
+ * @param source - the script to evaluate in the child.
+ * @returns the command and its argument vector.
+ */
+function nodeChild(source) {
+  return [process.execPath, ['-e', source]];
+}
+
 await test('returns the exit code and both streams', async () => {
-  const result = await run('/bin/sh', ['-c', 'echo out; echo err >&2; exit 3']);
+  const [command, args] = nodeChild(
+    'process.stdout.write("out"); process.stderr.write("err"); process.exit(3);',
+  );
+  const result = await run(command, args);
   assert.equal(result.code, 3);
   assert.equal(result.stdout.trim(), 'out');
   assert.equal(result.stderr.trim(), 'err');
@@ -833,8 +881,11 @@ await test('does not spawn at all when the signal is already aborted', async () 
   try {
     const controller = new AbortController();
     controller.abort();
+    const [command, args] = nodeChild(
+      `require('node:fs').writeFileSync(process.argv[1], 'ran')`,
+    );
     await assert.rejects(
-      () => run('/bin/sh', ['-c', `touch ${JSON.stringify(marker)}`], { signal: controller.signal }),
+      () => run(command, [...args, marker], { signal: controller.signal }),
       (error) => error.name === 'AbortError',
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -856,9 +907,10 @@ await test('cancelling a call actually kills the child', async () => {
   try {
     const controller = new AbortController();
     const started = Date.now();
-    const settled = run('/bin/sh', ['-c', `sleep 2; touch ${JSON.stringify(marker)}`], {
-      signal: controller.signal,
-    });
+    const [command, args] = nodeChild(
+      `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'survived'), 2000)`,
+    );
+    const settled = run(command, [...args, marker], { signal: controller.signal });
     setTimeout(() => controller.abort(), 150);
     await assert.rejects(() => settled, (error) => error.name === 'AbortError');
     assert.ok(Date.now() - started < 1500, 'a cancelled call must not wait for the child');
@@ -873,8 +925,11 @@ await test('a capture that overruns its budget is killed, not abandoned', async 
   const dir = await mkdtemp(join(tmpdir(), 'dsh-eye-exec-'));
   const marker = join(dir, 'survived');
   try {
+    const [command, args] = nodeChild(
+      `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'survived'), 2000)`,
+    );
     await assert.rejects(
-      () => run('/bin/sh', ['-c', `sleep 2; touch ${JSON.stringify(marker)}`], { timeoutMs: 150 }),
+      () => run(command, [...args, marker], { timeoutMs: 150 }),
       /exceeded its 150ms budget/u,
     );
     await new Promise((resolve) => setTimeout(resolve, 2400));
@@ -885,8 +940,9 @@ await test('a capture that overruns its budget is killed, not abandoned', async 
 });
 
 await test('a command that cannot be spawned rejects instead of hanging', async () => {
+  const missing = join(tmpdir(), 'dsh-screen-eye-no-such-binary', 'not-here');
   await assert.rejects(
-    () => run('/nonexistent/binary-that-does-not-exist', []),
+    () => run(missing, []),
     (error) => error.code === 'ENOENT',
   );
 });
@@ -922,8 +978,58 @@ await test('builds both tools with a model-facing description', () => {
   const screenshot = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
   assert.equal(screenshot.name, 'screenshot');
   assert.ok(screenshot.description.length > 100);
-  const permission = screenPermissionTool(platformFor().permission, resolveSettings({}));
+  const permission = screenPermissionTool(MACOS, resolveSettings({}));
   assert.equal(permission.name, 'screen_permission');
+});
+
+await test('the description tells the model what this platform actually does', async () => {
+  // The description is the only thing the model has to decide how to look, and
+  // the two platforms answer differently: macOS gates capture behind a grant
+  // the user must give, Windows has no such gate, offers no region picker and
+  // pays a second of PowerShell per call. A description that described the
+  // other platform would have the model waiting for a prompt that never comes.
+  const observations = [];
+  for (const platform of [darwin, win32]) {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: platform.id, configurable: true });
+    try {
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+      // The parameter help is compiled into JSON Schema, where a double quote
+      // in the prose arrives escaped; comparing against the unescaped text
+      // keeps the assertion about the words rather than about the encoding.
+      const parameters = JSON.stringify(tool.parameters).replaceAll('\\"', '"');
+      const haystack = `${tool.description}\n${parameters}`;
+      for (const [field, text] of Object.entries(platform.briefing)) {
+        assert.ok(haystack.includes(text), `${platform.id}: the ${field} briefing never reaches the model`);
+      }
+      observations.push({ description: tool.description, parameters });
+    } finally {
+      Object.defineProperty(process, 'platform', original);
+    }
+  }
+  const [macos, windows] = observations;
+  // The parts that are true everywhere, and the parts that must not leak
+  // across: a Windows model must not be told to grant Screen Recording, and a
+  // macOS model must not be told capture needs no consent.
+  for (const { description } of observations) {
+    assert.match(description, /return the picture itself/u);
+    assert.match(description, /The image comes back in this call/u);
+  }
+  assert.match(macos.description, /Screen Recording permission/u);
+  assert.doesNotMatch(windows.description, /Screen Recording/u);
+  assert.match(windows.description, /no screen-recording permission to grant/u);
+  assert.doesNotMatch(macos.description, /no screen-recording permission to grant/u);
+  // And the macOS description is still the macOS one, word for word where it
+  // states a measurement: the port is allowed to add a platform, not to change
+  // what the other one promises. The 155ms and 56ms figures are the macOS
+  // measurements, and a Windows one has no business carrying them.
+  assert.match(macos.description, /^Capture this macOS screen and return the picture itself/u);
+  assert.match(macos.parameters, /155ms for a full screen but 56ms for a 1200x800 region/u);
+  assert.match(macos.parameters, /"window" and "select" are interactive/u);
+  // The Windows briefing says what a burst can actually do there, which is the
+  // one thing a model about to ask for a 100ms interval needs to know.
+  assert.match(windows.parameters, /a burst runs in one engine process/u);
+  assert.doesNotMatch(macos.parameters, /one engine process/u);
 });
 
 await test('refuses to capture for a model that cannot see images', async () => {
@@ -960,8 +1066,12 @@ await test('refuses a capture when the model route cannot be resolved', async ()
 
 process.stdout.write('\nscreen_permission tool\n');
 
-await test('reports the live permission state and how to fix it', async () => {
-  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
+await test('reports the live permission state and how to fix it', async (skip) => {
+  if (!ON_MACOS) {
+    skip(`there is no Screen Recording model on ${process.platform}`);
+    return;
+  }
+  const tool = screenPermissionTool(MACOS, resolveSettings({}));
   const value = await tool.execute({}, stubExec());
   assert.equal(value.platform, process.platform);
   assert.equal(typeof value.authorized, 'boolean');
@@ -978,14 +1088,14 @@ await test('reports the live permission state and how to fix it', async () => {
 });
 
 await test('defaults to action "check" when none is given', async () => {
-  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
+  const tool = screenPermissionTool(MACOS, resolveSettings({}));
   const explicit = await tool.execute({ action: 'check' }, stubExec());
   assert.equal(typeof explicit.authorized, 'boolean');
   assert.equal(explicit.settingsOpened, undefined);
 });
 
 await test('renders both outcomes with the path the user must grant', () => {
-  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
+  const tool = screenPermissionTool(MACOS, resolveSettings({}));
   const denied = tool.output.render({}, {
     platform: 'darwin',
     authorized: false,
@@ -1007,12 +1117,16 @@ await test('renders both outcomes with the path the user must grant', () => {
   assert.doesNotMatch(granted[0].text, /Tell the user exactly this/u);
 });
 
-await test('the guide never reports a state it did not observe', async () => {
+await test('the guide never reports a state it did not observe', async (skip) => {
   // The previous revision returned authorized: false from the settings action
   // unconditionally, so asking for guidance on a machine that already had the
   // grant was told it did not. A guidance path that invents the problem it is
   // guiding you through is worse than no guidance.
-  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
+  if (!ON_MACOS) {
+    skip(`there is no Screen Recording model on ${process.platform}`);
+    return;
+  }
+  const tool = screenPermissionTool(MACOS, resolveSettings({}));
   const value = await tool.execute({ action: 'guide' }, stubExec());
   assert.equal(typeof value.authorized, 'boolean');
 
@@ -1031,7 +1145,7 @@ await test('the guide never reports a state it did not observe', async () => {
 });
 
 await test('renders the settings-opened outcome without claiming authorisation', () => {
-  const tool = screenPermissionTool(platformFor().permission, resolveSettings({}));
+  const tool = screenPermissionTool(MACOS, resolveSettings({}));
   const [block] = tool.output.render({}, {
     platform: 'darwin',
     authorized: false,
@@ -1052,7 +1166,10 @@ await test('a denied capture carries the onboarding steps, not the system string
     kind: DENIED,
     detail: 'could not create image from display',
   });
-  const message = captureFailureError(denied, 'en').message;
+  // Asked of the macOS model directly rather than of the host: this is a claim
+  // about what macOS does with a TCC denial, and it has to hold whichever
+  // machine runs the suite.
+  const message = MACOS.describeFailure(denied, describeCaptureFailure, { locale: 'en' }).message;
   assert.match(message, /refused by macOS/u);
   assert.ok(message.includes(grantTargetPath()), 'the message must name what to grant');
   assert.match(message, /Screen & System Audio Recording/u);
@@ -1061,7 +1178,7 @@ await test('a denied capture carries the onboarding steps, not the system string
   // bug and tells the user nothing they can act on.
   assert.doesNotMatch(message, /could not create image from display/u);
 
-  const chinese = captureFailureError(denied, 'zh').message;
+  const chinese = MACOS.describeFailure(denied, describeCaptureFailure, { locale: 'zh' }).message;
   assert.match(chinese, /屏幕录制/u);
   assert.ok(chinese.includes(grantTargetPath()));
 });
@@ -1079,6 +1196,21 @@ await test('an ordinary capture failure keeps the system detail', () => {
   assert.equal(bare, 'no output at all');
 });
 
+await test('a refused capture names what refused it, on a platform that has no grant', () => {
+  // Windows has nothing to grant, so a refusal there is the engine's own
+  // diagnosis — an out-of-range display, a region off the desktop, a session
+  // with no visible desktop — and the model needs that text intact rather than
+  // translated into permission advice that does not apply.
+  const refused = new CaptureError('display 99 does not exist: this machine reports 1 display(s)', {
+    kind: 'no-such-display',
+    detail: 'display 99 does not exist: this machine reports 1 display(s)',
+  });
+  assert.equal(win32.permission, null, 'Windows has no consent model to report');
+  const message = describeCaptureFailure(refused).message;
+  assert.match(message, /display 99 does not exist/u);
+  assert.doesNotMatch(message, /Screen Recording/u);
+});
+
 await test('an error that is not a capture failure is passed through untouched', () => {
   const original = new Error('something else entirely');
   assert.equal(captureFailureError(original, 'en'), original);
@@ -1094,9 +1226,33 @@ process.stdout.write('\nlive capture\n');
 const liveDir = await mkdtemp(join(tmpdir(), 'dsh-screen-eye-test-'));
 const liveSettings = { requireImageCapableModel: false, outputDir: liveDir };
 
-const probe = await probeScreenRecording();
-if (!probe.authorized) {
-  process.stdout.write(`  skip live capture — Screen Recording not granted (${probe.reason})\n`);
+/**
+ * Whether this machine can actually look at its own screen right now.
+ *
+ * Two platforms, two very different reasons to say no, and the same rule for
+ * both: ask the platform rather than guess. macOS answers with its consent
+ * model; Windows, which has no consent to give, answers by listing displays,
+ * which is the first thing that fails on a session with no visible desktop.
+ * @returns whether live captures can run, and why not when they cannot.
+ */
+async function liveCaptureAvailable() {
+  if (ON_MACOS) {
+    const probe = await probeScreenRecording();
+    return probe.authorized
+      ? { ok: true }
+      : { ok: false, reason: `Screen Recording not granted (${probe.reason})` };
+  }
+  try {
+    await platformFor().listDisplays({});
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error.message };
+  }
+}
+
+const live = await liveCaptureAvailable();
+if (!live.ok) {
+  process.stdout.write(`  skip live capture — ${live.reason}\n`);
 } else {
   await test('captures the real screen and commits an image attachment', async () => {
     const attachments = stubAttachments();
@@ -1227,6 +1383,17 @@ if (!probe.authorized) {
       value.spacingMs >= 150 && value.spacingMs <= 1200,
       `achieved spacing was ${value.spacingMs}ms`,
     );
+    if (ON_WINDOWS) {
+      // The upper bound that matters here is much tighter than the one above:
+      // a Windows capture costs about a second of PowerShell start, so a burst
+      // spaced at anything near that would mean the frames were taken as
+      // separate engine calls — which is exactly what captureBurst exists to
+      // avoid, and what the interval this tool advertises cannot survive.
+      assert.ok(
+        value.spacingMs <= 700,
+        `a burst must be one engine call on Windows; the spacing was ${value.spacingMs}ms`,
+      );
+    }
 
     const names = value.frames.map((frame) => basename(frame.path));
     assert.equal(new Set(names).size, 3, 'each frame needs its own file');
@@ -1243,7 +1410,7 @@ if (!probe.authorized) {
     assert.deepEqual(validateJsonSchemaValue(compiledOutput(tool), value), []);
   });
 
-  await test('lists the connected displays in the order -D numbers them', async (skip) => {
+  await test('lists the connected displays in the order the capture index numbers them', async (skip) => {
     // Deliberately built with the default settings and an execution context
     // carrying no agent at all: the inventory returns no image, so it must not
     // be gated on the calling route being able to see one.
@@ -1279,7 +1446,7 @@ if (!probe.authorized) {
     assert.match(blocks[0].text, /<displays count=\d+>/u);
   });
 
-  await test('reports a non-zero exit instead of writing an empty file', async () => {
+  await test('refuses a capture the engine cannot take, instead of writing an empty file', async () => {
     await assert.rejects(
       () => captureScreen(planCapture({ mode: 'display', display: 99 }), {
         outputPath: join(liveDir, 'should-not-exist.png'),
@@ -1289,14 +1456,159 @@ if (!probe.authorized) {
       (error) => error instanceof CaptureError,
     );
   });
+
+  if (ON_WINDOWS) {
+    // The three cases below exist because Windows is the platform where the
+    // engine's own claims are hardest to check from anywhere else: a
+    // DPI-unaware process silently captures a downscaled copy of the screen,
+    // the display index has to mean the same thing to the inventory and to the
+    // capture, and the pointer is not in the pixels unless it is drawn there.
+    const inventoryOf = async () => {
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+      return tool.execute({ mode: 'displays' }, stubExec());
+    };
+
+    await test('captures the desktop at its true pixel size, not a scaled copy', async () => {
+      // The reason this is a case and not a comment: on a 3840x2160 panel at
+      // 125% scaling, a DPI-unaware engine returns 3072x1728 and every text
+      // measurement taken from the image is 25% wrong. Asserted against the
+      // inventory rather than against a constant, so it holds on any machine.
+      const inventory = await inventoryOf();
+      const primary = inventory.displays[0];
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+      const value = await tool.execute({ mode: 'screen' }, stubExec());
+
+      const size = pngDimensions(await readFile(value.path));
+      assert.equal(size.width, primary.width, 'the capture must match the desktop width');
+      assert.equal(size.height, primary.height, 'the capture must match the desktop height');
+      // A live desktop is not a black frame, and the engine's own check must
+      // not cry wolf on one — a note here would be reported to the model as a
+      // capture it cannot trust.
+      assert.equal(value.note, undefined, 'a real desktop must not be reported as a black frame');
+    });
+
+    await test('captures the display whose index the inventory handed out', async () => {
+      const inventory = await inventoryOf();
+      const primary = inventory.displays[0];
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+      const value = await tool.execute({ mode: 'display', display: primary.index }, stubExec());
+      const size = pngDimensions(await readFile(value.path));
+      assert.equal(size.width, primary.width);
+      assert.equal(size.height, primary.height);
+
+      // The other half of that contract: an index no display has is refused by
+      // name, rather than capturing something else or nothing.
+      await assert.rejects(
+        () => tool.execute({ mode: 'display', display: 97 }, stubExec()),
+        /display 97 does not exist/u,
+      );
+    });
+
+    await test('captures only what the screen shows where the region asks', async () => {
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+      const value = await tool.execute({ mode: 'region', region: '16,24,320,240' }, stubExec());
+      assert.deepEqual(pngDimensions(await readFile(value.path)), { width: 320, height: 240 });
+
+      // A region that covers no display is refused with the desktop it missed,
+      // because CopyFromScreen does not fail there — it returns a black frame.
+      await assert.rejects(
+        () => tool.execute({ mode: 'region', region: '-9000,-9000,64,64' }, stubExec()),
+        (error) => {
+          assert.match(error.message, /does not overlap any display/u);
+          assert.match(error.message, /this desktop spans/u);
+          return true;
+        },
+      );
+    });
+
+    await test('says out loud when a frame is black almost everywhere', async () => {
+      // A rectangle overlapping the desktop by a single pixel: the rest of it
+      // is black, which is the same frame a locked or disconnected session
+      // produces, and it is the only way to produce one deliberately — locking
+      // the machine to exercise a diagnostic would be a worse idea than the
+      // diagnostic is good. The point of the case is that the picture is still
+      // returned rather than withheld, and that the model is told why it may be
+      // looking at nothing.
+      const inventory = await inventoryOf();
+      const primary = inventory.displays[0];
+      const region = `${primary.x + primary.width - 1},${primary.y + primary.height - 1},100,100`;
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+      const value = await tool.execute({ mode: 'region', region }, stubExec());
+
+      assert.match(value.note, /entirely black/u);
+      // The picture is still returned, at the size that was asked for: a note
+      // is an observation, not a refusal.
+      assert.deepEqual(pngDimensions(await readFile(value.path)), { width: 100, height: 100 });
+      const [envelope] = tool.output.render({}, value);
+      assert.match(envelope.text, /<note>/u);
+      assert.deepEqual(validateJsonSchemaValue(compiledOutput(tool), value), []);
+    });
+
+    await test('captures the window in the foreground, inside the desktop', async () => {
+      const inventory = await inventoryOf();
+      const primary = inventory.displays[0];
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+      const value = await tool.execute({ mode: 'window' }, stubExec());
+      const size = pngDimensions(await readFile(value.path));      // A maximised window reports a rectangle about eight pixels larger than
+      // the screen on every side, so this is the clamp being checked: a
+      // capture may be smaller than the desktop and must never be larger.
+      assert.ok(
+        size.width <= primary.width && size.height <= primary.height,
+        `the window capture is ${size.width}x${size.height}, outside the ${primary.width}x${primary.height} desktop`,
+      );
+      assert.ok(size.width > 0 && size.height > 0);
+
+      // Windows' `window` waits for nobody, so unlike macOS's it can be
+      // repeated — and the rectangle is resolved once, before the loop, so every
+      // frame of the burst covers the same window.
+      const burst = await tool.execute({ mode: 'window', frames: 2, interval_ms: 300 }, stubExec());
+      assert.equal(burst.frames.length, 2);
+      for (const frame of burst.frames) {
+        const size2 = pngDimensions(await readFile(frame.path));
+        assert.ok(size2.width === size.width && size2.height === size.height);
+      }
+    });
+
+    await test('draws the pointer when it was asked for, and says what it did', async () => {
+      // `CopyFromScreen` never includes the cursor, so `include_cursor` is a
+      // claim about this code path and nothing else. The engine reports the
+      // result of the draw: 0 is DrawIconEx succeeding, -2 is a pointer that
+      // Windows says is not showing, and the negative codes beyond that are
+      // failures the tool turns into a note.
+      const plan = planCapture({ mode: 'region', region: '0,0,240,180', include_cursor: true });
+      const path = join(liveDir, 'cursor.png');
+      const result = await run(powershellPath(), powershellArgs(captureScript(plan, path)));
+      const parsed = parseScriptResult(result.stdout);
+      assert.equal(parsed.ok, true, result.stderr.trim());
+      assert.ok(
+        parsed.cursorDrawn === 0 || parsed.cursorDrawn === -2,
+        `the pointer draw reported ${parsed.cursorDrawn}`,
+      );
+      assert.equal(notesForFrame(parsed).length, 0, 'a successful draw is not a note');
+    });
+
+    await test('refuses mode "select" by name rather than capturing something else', async () => {
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+      await assert.rejects(
+        () => tool.execute({ mode: 'select' }, stubExec()),
+        (error) => {
+          assert.match(error.message, /no Windows equivalent/u);
+          assert.match(error.message, /mode "region"/u);
+          return true;
+        },
+      );
+    });
+  }
 }
 
 process.stdout.write('\nplatform gate\n');
 
-await test('supports only darwin', () => {
+await test('serves darwin and win32, and nothing else', () => {
   assert.equal(isSupportedPlatform('darwin'), true);
-  assert.equal(isSupportedPlatform('win32'), false);
+  assert.equal(isSupportedPlatform('win32'), true);
   assert.equal(isSupportedPlatform('linux'), false);
+  assert.equal(isSupportedPlatform('freebsd'), false);
+  assert.deepEqual(supportedPlatforms().sort(), ['darwin', 'win32']);
 });
 
 await test('the manifest platform gate agrees with the engine registry', async () => {
@@ -1328,9 +1640,9 @@ await test('the manifest platform gate agrees with the engine registry', async (
 
 await test('the bundle patch gates the module on the platform', async () => {
   // The gate must sit in the patch, not only in apply(): that is what stops
-  // the module being imported at all on a non-macOS host.
+  // the module being imported at all on a host with no engine.
   const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
-  assert.match(patch, /disabled:\s*!!js\s+process\.platform\s*!==\s*'darwin'/u);
+  assert.match(patch, /disabled:\s*!!js\s+process\.platform\s*!==\s*'darwin'\s*&&\s*process\.platform\s*!==\s*'win32'/u);
   assert.match(patch, /name:\s*dsh-screen-eye/u);
 });
 
@@ -1357,8 +1669,8 @@ await test('no OS-specific module is reached from outside the seam', async () =>
   // through it, and every such shortcut is one more place a port has to find —
   // which is the failure this refactor exists to prevent. So the real import
   // graph is walked rather than the rule being trusted.
-  const osSpecific = ['permission.mjs', 'displays.mjs', 'platform/darwin.mjs'];
-  const allowed = new Set(['lib/platform.mjs', 'lib/platform/darwin.mjs']);
+  const osSpecific = ['permission.mjs', 'displays.mjs', 'platform/darwin.mjs', 'platform/win32.mjs'];
+  const allowed = new Set(['lib/platform.mjs', 'lib/platform/darwin.mjs', 'lib/platform/win32.mjs']);
 
   const libDir = new URL('../lib/', import.meta.url);
   const platformDir = new URL('../lib/platform/', import.meta.url);
@@ -1396,15 +1708,68 @@ await test('every registered platform implements the whole contract', () => {
     for (const method of ['capture', 'listDisplays']) {
       assert.equal(typeof platform[method], 'function', `${id} does not implement ${method}()`);
     }
-    assert.ok('permission' in platform, `${id} does not declare permission, not even as null`);
-    if (platform.permission === null) continue;
-    for (const method of ['probe', 'openSettings', 'grantTarget', 'guidance', 'describeFailure']) {
-      assert.equal(
-        typeof platform.permission[method],
-        'function',
-        `${id} declares a permission but does not implement ${method}()`,
-      );
+    // Optional by the contract: a platform that leaves it out is driven by the
+    // frame-by-frame loop in lib/capture.mjs.
+    if (platform.captureBurst !== undefined) {
+      assert.equal(typeof platform.captureBurst, 'function', `${id} declares a captureBurst that is not one`);
     }
+    assert.ok('permission' in platform, `${id} does not declare permission, not even as null`);
+    if (platform.permission !== null) {
+      for (const method of ['probe', 'openSettings', 'grantTarget', 'guidance', 'describeFailure']) {
+        assert.equal(
+          typeof platform.permission[method],
+          'function',
+          `${id} declares a permission but does not implement ${method}()`,
+        );
+      }
+    }
+    // The briefing is what the tool tells the model about this system. An
+    // empty field is worse than absent: the description would read as if the
+    // platform had nothing to say about its own permission model.
+    for (const field of ['surface', 'consent', 'interactive', 'timing']) {
+      assert.equal(
+        typeof platform.briefing?.[field],
+        'string',
+        `${id} does not brief the model on ${field}`,
+      );
+      assert.ok(platform.briefing[field].trim().length > 0, `${id}'s ${field} briefing says nothing`);
+    }
+    // The timing briefing is a measurement, and it is what tells the model
+    // whether an interval it is about to ask for is reachable at all.
+    assert.match(platform.briefing.timing, /\d+\s?ms/u, `${id}'s timing briefing carries no measurement`);
+    // Which modes wait for a person decides whether a burst is refused, so a
+    // platform that forgot to say would get the other system's answer.
+    assert.ok(platform.interactiveModes instanceof Set, `${id} does not say which modes are interactive`);
+    for (const mode of platform.interactiveModes) {
+      assert.ok(CAPTURE_MODES.includes(mode), `${id} calls "${mode}" interactive, which is not a mode`);
+    }
+  }
+});
+
+await test('the modes that wait for a person are the ones that really do', () => {
+  // A mode that waits cannot be repeated unattended, so this set decides whether
+  // a burst is refused — and the two systems answer differently: macOS's
+  // `window` waits for a click, Windows' captures the window already in front.
+  assert.deepEqual([...darwin.interactiveModes].sort(), ['select', 'window']);
+  assert.deepEqual([...win32.interactiveModes], ['select']);
+  // The default in lib/capture.mjs is macOS's set, which is what keeps a caller
+  // that consults no platform on the conservative answer. Pinned here so the
+  // hand-written copy in darwin.mjs cannot drift away from it.
+  assert.deepEqual([...darwin.interactiveModes].sort(), [...INTERACTIVE_MODES].sort());
+
+  // And it is planning that has to hear it: a window burst is refused with the
+  // macOS set and allowed with the Windows one.
+  assert.throws(
+    () => planCapture({ mode: 'window', frames: 3 }),
+    /waits for the user to choose/u,
+  );
+  assert.equal(
+    planCapture({ mode: 'window', frames: 3 }, { interactiveModes: win32.interactiveModes }).frames,
+    3,
+  );
+  // `select` is refused either way, because it waits on both.
+  for (const interactiveModes of [INTERACTIVE_MODES, win32.interactiveModes]) {
+    assert.throws(() => planCapture({ mode: 'select', frames: 3 }, { interactiveModes }), /waits/u);
   }
 });
 
@@ -1415,6 +1780,223 @@ await test('asking for an unserved platform is a bug, and says so', () => {
   assert.match(
     (() => { try { platformFor('plan9'); } catch (error) { return error.message; } })(),
     new RegExp(supportedPlatforms().join('|'), 'u'),
+  );
+});
+
+process.stdout.write('\nthe windows engine\n');
+
+await test('maps each mode onto the rectangle Windows should read', () => {
+  // The Windows counterpart of the `screencaptureArgs` case: the part of the
+  // engine worth asserting without capturing anything. It runs on every
+  // platform, which is the point — macOS CI checks the Windows mapping too.
+  const screen = captureScript(planCapture({ mode: 'screen' }), 'C:\\shots\\a.png');
+  assert.match(screen, /\$rect = \$primary\.Bounds/u);
+
+  const display = captureScript(planCapture({ mode: 'display', display: 2 }), 'C:\\shots\\a.png');
+  assert.match(display, /\$rect = \$ordered\[2 - 1\]\.Bounds/u);
+  assert.match(display, /does not exist/u, 'an index no display has must be refused by name');
+
+  const region = captureScript(planCapture({ mode: 'region', region: '-1920,0,800,600' }), 'C:\\shots\\a.png');
+  assert.match(region, /New-Object System\.Drawing\.Rectangle -1920, 0, 800, 600/u);
+  // A rectangle that misses every display is refused with the desktop it
+  // missed, because CopyFromScreen returns a black frame rather than failing.
+  assert.match(region, /does not overlap any display/u);
+
+  const window = captureScript(planCapture({ mode: 'window' }), 'C:\\shots\\a.png');
+  assert.match(window, /ForegroundWindowRect/u);
+  assert.match(window, /Intersect/u, 'the window rectangle must be clamped to the desktop');
+});
+
+await test('refuses mode "select" instead of capturing something else', () => {
+  const script = captureScript(planCapture({ mode: 'select' }), 'C:\\shots\\a.png');
+  assert.match(script, /Fail 'unsupported-mode'/u);
+  assert.match(script, /no Windows equivalent/u);
+  // The remedy has to be in the message, or the model is told no without being
+  // told what to do instead.
+  assert.match(script, /mode "region"/u);
+});
+
+await test('the engine refuses a session with no visible desktop', () => {
+  // The hazard the platform documentation names: a process that is not
+  // attached to the interactive window station gets a black frame from
+  // CopyFromScreen rather than an error, and a naive engine reports that as a
+  // successful capture of a black screen.
+  for (const script of [captureScript(planCapture({ mode: 'screen' }), 'C:\\a.png'), displaysScript()]) {
+    assert.match(script, /WindowStationName/u);
+    assert.match(script, /WinSta0/u);
+    assert.match(script, new RegExp(NO_SESSION, 'u'));
+  }
+});
+
+await test('declares DPI awareness before it asks Windows about the desktop', () => {
+  // Order is the whole point: `Screen.AllScreens` caches on first touch, so an
+  // engine that enumerated first and declared awareness afterwards would keep
+  // reporting — and capturing — the virtualised size for the life of the
+  // process. Measured on a 3840x2160 panel at 125%: 3072x1728 before, 3840x2160
+  // after.
+  const script = captureScript(planCapture({ mode: 'screen' }), 'C:\\a.png');
+  const awareness = script.indexOf('MakeDpiAware');
+  const enumeration = script.indexOf('System.Windows.Forms.Screen');
+  assert.ok(awareness > 0 && enumeration > 0);
+  assert.ok(awareness < enumeration, 'DPI awareness must be declared before the screens are read');
+});
+
+await test('quotes an output path that would otherwise break the script', () => {
+  // A path is interpolated into PowerShell source, and PowerShell's own
+  // single-quote rule is the only escaping that matters inside one. A capture
+  // directory named `it's mine` must not turn the script into a syntax error.
+  const script = captureScript(planCapture({ mode: 'screen' }), "C:\\shots\\it's mine\\a.png");
+  assert.match(script, /Save-Frame \$rect 'C:\\shots\\it''s mine\\a\.png'/u);
+});
+
+await test('hands the script to PowerShell without a quoting rule to escape from', () => {
+  const script = captureScript(planCapture({ mode: 'screen' }), 'C:\\a.png');
+  const args = powershellArgs(script);
+  assert.ok(args.includes('-NonInteractive'), 'the engine must never wait on a prompt');
+  assert.equal(args.at(-2), '-EncodedCommand');
+  // Base64 of UTF-16LE, which is what `-EncodedCommand` decodes: the check is
+  // the round trip, not the encoding choice.
+  const decoded = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+  assert.equal(decoded, script);
+});
+
+await test('a burst is one engine call with one path per frame', () => {
+  const plan = planCapture({ mode: 'region', region: '0,0,64,48', frames: 3, interval_ms: 250 });
+  const paths = ['C:\\shots\\a-1.png', 'C:\\shots\\a-2.png', 'C:\\shots\\a-3.png'];
+  const script = burstScript(plan, paths);
+  for (const path of paths) assert.ok(script.includes(`'${path}'`), `${path} is missing from the burst`);
+  assert.match(script, /\$interval = 250/u);
+  // One shim, one rectangle, one process: that is what makes the interval
+  // reachable on a platform where a call costs about a second.
+  assert.equal(script.match(/Add-Type -Namespace/gu).length, 1);
+  assert.equal(script.match(/Save-Frame \$rect \$path/gu).length, 1);
+});
+
+await test('reads the one marked result line, whatever else is on stdout', () => {
+  const payload = { ok: true, blackPermille: 1 };
+  assert.deepEqual(parseScriptResult(`${RESULT_MARKER} ${JSON.stringify(payload)}\r\n`), payload);
+  // A warning printed first must not be mistaken for the answer, and the last
+  // marked line is the answer if a script ever prints two.
+  const noisy = `WARNING: something\n${RESULT_MARKER} {"ok":false,"kind":"x"}\n${RESULT_MARKER} ${JSON.stringify(payload)}`;
+  assert.deepEqual(parseScriptResult(noisy), payload);
+  // A script that died before printing one produced no answer, which is not
+  // the same as an empty success.
+  assert.equal(parseScriptResult(''), undefined);
+  assert.equal(parseScriptResult('some error text\n'), undefined);
+  assert.equal(parseScriptResult(`${RESULT_MARKER} {not json}`), undefined);
+});
+
+await test('orders displays the way the capture engine numbers them', () => {
+  // Same rule as the macOS inventory, and the same reason for a pure case: the
+  // ordering is what makes `display` usable, and a CI runner cannot show it.
+  const ordered = displaysFromScreens({
+    screens: [
+      { device: '\\\\.\\DISPLAY2', primary: false, x: 3840, y: 0, width: 2560, height: 1440 },
+      { device: '\\\\.\\DISPLAY1', primary: true, x: 0, y: 0, width: 3840, height: 2160 },
+    ],
+  });
+  assert.deepEqual(ordered.map((display) => display.index), [1, 2]);
+  assert.equal(ordered[0].name, '\\\\.\\DISPLAY1');
+  assert.equal(ordered[0].main, true);
+  // The origin is what makes a region on a second screen expressible, so it
+  // has to survive the sort with its own display.
+  assert.deepEqual(
+    { x: ordered[1].x, y: ordered[1].y, width: ordered[1].width },
+    { x: 3840, y: 0, width: 2560 },
+  );
+});
+
+await test('reports a display Windows did not name, and refuses an empty inventory', () => {
+  const [unnamed] = displaysFromScreens({ screens: [{ primary: true }] });
+  assert.equal(unnamed.name, 'unknown display');
+  assert.equal(unnamed.width, undefined, 'a size that was not reported must not be invented');
+  // An empty inventory means the reading failed. Reporting "no displays" would
+  // be the plugin asserting something it never observed.
+  assert.throws(() => displaysFromScreens({ screens: [] }), /listed no displays/u);
+  assert.throws(() => displaysFromScreens({}), /listed no displays/u);
+});
+
+await test('says when a captured frame is black, and says nothing otherwise', () => {
+  // The black-frame report is the answer to the one hazard the platform
+  // documentation names, so both directions are asserted: it fires on a frame
+  // that is all black, and it stays quiet on a frame that is not — a false
+  // positive would put a warning on every capture a user takes.
+  const black = notesForFrame({ blackPermille: BLACK_FRAME_PERMILLE, dpiAware: true });
+  assert.equal(black.length, 1);
+  assert.match(black[0], /entirely black/u);
+  assert.match(black[0], /locked/u, 'the message must name the likely causes');
+  assert.match(black[0], /If the screen really is black/u, 'and must not claim more than it knows');
+
+  assert.deepEqual(notesForFrame({ blackPermille: 4, dpiAware: true }), []);
+  assert.deepEqual(notesForFrame({ blackPermille: BLACK_FRAME_PERMILLE - 1, dpiAware: true }), []);
+
+  const scaled = notesForFrame({ blackPermille: 3, dpiAware: false });
+  assert.equal(scaled.length, 1);
+  assert.match(scaled[0], /scaled down/u);
+
+  // A pointer that was asked for and refused is worth a note; one that was
+  // never asked for is not.
+  assert.deepEqual(notesForFrame({ blackPermille: 3, dpiAware: true, cursorDrawn: null }), []);
+  assert.equal(notesForFrame({ blackPermille: 3, dpiAware: true, cursorDrawn: -3 }).length, 1);
+});
+
+await test('the engine path is the PowerShell every Windows install has', () => {
+  // `powershell.exe` rather than `pwsh`: 5.1 is the one that is always there,
+  // and it is STA by default, which is what the WinForms enumeration wants.
+  // Asserted as a shape rather than as an absolute path, because the system
+  // drive is a choice the installer made.
+  assert.match(powershellPath(), /WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/u);
+  assert.ok(powershellPath().startsWith(process.env.SystemRoot ?? 'C:\\Windows'));
+});
+
+await test('a platform says whether it can take a whole burst in one call', () => {
+  // The optional half of the contract, asserted in both directions: Windows
+  // pays about a second of process start per call and takes the burst in one
+  // process, while macOS pays per frame and is driven by the frame-by-frame
+  // loop — which is the baseline the loop exists to be.
+  assert.equal(typeof win32.captureBurst, 'function');
+  assert.equal(darwin.captureBurst, undefined);
+});
+
+await test('a frame with a note reaches the model beside its image', () => {
+  // The note is not decoration: a platform's capture can succeed and still be
+  // unusable, and the model has to be told which. It rides in the text
+  // envelope, next to the image block, and a capture without one renders
+  // exactly as it did before there was such a field.
+  const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+  const shape = screenshotShapes()['one capture'];
+  const [plain] = tool.output.render({}, shape);
+  assert.doesNotMatch(plain.text, /<note>/u);
+
+  const [annotated] = tool.output.render({}, { ...shape, note: 'this capture came back entirely black.' });
+  assert.match(annotated.text, /<note>this capture came back entirely black\.<\/note>/u);
+  assert.deepEqual(
+    validateJsonSchemaValue(compiledOutput(tool), { ...shape, note: 'anything at all' }),
+    [],
+    'a value carrying a note must still satisfy the declared schema',
+  );
+
+  const burst = screenshotShapes()['a burst'];
+  const [envelope] = tool.output.render({}, { ...burst, note: 'every frame was black.' });
+  assert.match(envelope.text, /<note>every frame was black\.<\/note>/u);
+  assert.deepEqual(validateJsonSchemaValue(compiledOutput(tool), { ...burst, note: 'x' }), []);
+});
+
+await test('a display origin reaches the model when the platform reports one', () => {
+  const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+  const [macos] = tool.output.render({}, screenshotShapes()['a display inventory']);
+  assert.doesNotMatch(macos.text, / at /u, 'macOS reports no origin, so none may appear');
+  const [windows] = tool.output.render({}, {
+    mode: 'displays',
+    displays: [{ index: 2, name: '\\\\.\\DISPLAY2', width: 2560, height: 1440, x: 3840, y: 0 }],
+  });
+  assert.match(windows.text, /at 3840,0/u);
+  assert.deepEqual(
+    validateJsonSchemaValue(compiledOutput(tool), {
+      mode: 'displays',
+      displays: [{ index: 2, name: '\\\\.\\DISPLAY2', width: 2560, height: 1440, x: 3840, y: 0 }],
+    }),
+    [],
   );
 });
 
@@ -1455,22 +2037,59 @@ function wiringCtx(options = {}) {
   return { ctx, registered, definitions, errors };
 }
 
-await test('apply() registers both tools on macOS', () => {
-  const { ctx, registered } = wiringCtx();
-  apply(ctx, {});
-  assert.deepEqual(registered.sort(), ['screen_permission', 'screenshot']);
+/**
+ * Run a case as if the host were a different platform.
+ *
+ * `platformFor()` reads `process.platform` at call time — by design, so the
+ * runtime gate and the engine registry cannot disagree — which means the
+ * wiring decisions can be exercised for every platform from any machine,
+ * instead of only the one the suite happens to be running on. That is what
+ * keeps the Windows branch of `apply()` from being the untested half.
+ *
+ * @param platform - the `process.platform` value to pretend to be.
+ * @param body - the case body.
+ */
+async function onPlatform(platform, body) {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try {
+    await body();
+  } finally {
+    Object.defineProperty(process, 'platform', original);
+  }
+}
+
+await test('apply() registers both tools on macOS', async () => {
+  await onPlatform('darwin', () => {
+    const { ctx, registered } = wiringCtx();
+    apply(ctx, {});
+    assert.deepEqual(registered.sort(), ['screen_permission', 'screenshot']);
+  });
 });
 
-await test('a tool-name collision is reported without taking the host down', () => {
+await test('apply() registers the screenshot tool alone on Windows', async () => {
+  // Windows has no consent model, so there is no grant to report and the
+  // permission tool is not registered at all: offering the model a question
+  // with no answer is worse than not offering it.
+  await onPlatform('win32', () => {
+    const { ctx, registered } = wiringCtx();
+    apply(ctx, {});
+    assert.deepEqual(registered, ['screenshot']);
+  });
+});
+
+await test('a tool-name collision is reported without taking the host down', async () => {
   // register() rejects duplicates, and a thrown apply aborts the whole boot:
   // "you have two screenshot plugins" must not become "your harness will not
   // start". The unaffected tool still registers.
-  const { ctx, registered, errors } = wiringCtx({ collisions: new Set(['screen_permission']) });
-  assert.doesNotThrow(() => apply(ctx, {}));
-  assert.deepEqual(registered, ['screenshot'], 'the unaffected tool must still register');
-  assert.equal(errors.length, 1);
-  assert.match(errors[0], /screen_permission/u);
-  assert.match(errors[0], /already registered/u);
+  await onPlatform('darwin', () => {
+    const { ctx, registered, errors } = wiringCtx({ collisions: new Set(['screen_permission']) });
+    assert.doesNotThrow(() => apply(ctx, {}));
+    assert.deepEqual(registered, ['screenshot'], 'the unaffected tool must still register');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /screen_permission/u);
+    assert.match(errors[0], /already registered/u);
+  });
 });
 
 await test('a failed registration is discoverable through screen_permission', async () => {
@@ -1479,53 +2098,73 @@ await test('a failed registration is discoverable through screen_permission', as
   // way, or a plugin doing less than it claims is indistinguishable from one
   // doing everything. screen_permission is the tool an agent reaches for when
   // the screen misbehaves, so it carries the report.
-  const { ctx, definitions } = wiringCtx({ collisions: new Set(['screenshot']) });
-  apply(ctx, {});
-  const permission = definitions.find((definition) => definition.name === 'screen_permission');
-  assert.ok(permission, 'the permission tool must still mount when the other one cannot');
+  await onPlatform('darwin', async () => {
+    const { ctx, definitions } = wiringCtx({ collisions: new Set(['screenshot']) });
+    apply(ctx, {});
+    const permission = definitions.find((definition) => definition.name === 'screen_permission');
+    assert.ok(permission, 'the permission tool must still mount when the other one cannot');
 
-  const value = await permission.execute({}, stubExec());
-  assert.ok(Array.isArray(value.issues), 'the failed tool must be reported');
-  assert.match(value.issues[0], /screenshot tool is unavailable/u);
-  assert.match(value.issues[0], /already registered/u);
+    const value = await permission.execute({}, stubExec());
+    assert.ok(Array.isArray(value.issues), 'the failed tool must be reported');
+    assert.match(value.issues[0], /screenshot tool is unavailable/u);
+    assert.match(value.issues[0], /already registered/u);
 
-  const [block] = permission.output.render({}, value);
-  assert.match(block.text, /did not mount/u);
-  // The clean-bill-of-health sentence must be gone: the permission may be
-  // fine while the plugin is still not working, and saying otherwise would be
-  // the plugin's own claim contradicted by its own report.
-  assert.doesNotMatch(block.text, /the screenshot tool will work/u);
+    const [block] = permission.output.render({}, value);
+    assert.match(block.text, /<mount_issues>/u);
+    assert.match(block.text, /the screenshot tool is unavailable/u);
+
+    // Whatever this machine's permission state is, the clean bill of health
+    // must be gone when there are issues: the permission may be fine while the
+    // plugin is still not working, and claiming otherwise would be the
+    // plugin's own report contradicted by itself. Rendered from a fixed value,
+    // because the live probe answers differently on a machine that has never
+    // granted Screen Recording.
+    const [healthy] = permission.output.render({}, {
+      platform: 'darwin',
+      authorized: true,
+      target: '/usr/local/bin/node',
+      issues: ['the screenshot tool is unavailable: already registered'],
+    });
+    assert.match(healthy.text, /did not mount/u);
+    assert.doesNotMatch(healthy.text, /the screenshot tool will work/u);
+    const [clean] = permission.output.render({}, {
+      platform: 'darwin',
+      authorized: true,
+      target: '/usr/local/bin/node',
+    });
+    assert.match(clean.text, /the screenshot tool will work/u);
+  });
 });
 
 await test('a healthy mount reports no issues at all', async () => {
-  const { ctx, definitions } = wiringCtx();
-  apply(ctx, {});
-  const permission = definitions.find((definition) => definition.name === 'screen_permission');
-  const value = await permission.execute({}, stubExec());
-  assert.equal(value.issues, undefined, 'no issues key when there is nothing to report');
-  const [block] = permission.output.render({}, value);
-  assert.doesNotMatch(block.text, /mount_issues/u);
-});
-
-await test('apply() survives both tool names colliding', () => {
-  const { ctx, registered, errors } = wiringCtx({
-    collisions: new Set(['screen_permission', 'screenshot']),
+  await onPlatform('darwin', async () => {
+    const { ctx, definitions } = wiringCtx();
+    apply(ctx, {});
+    const permission = definitions.find((definition) => definition.name === 'screen_permission');
+    const value = await permission.execute({}, stubExec());
+    assert.equal(value.issues, undefined, 'no issues key when there is nothing to report');
+    const [block] = permission.output.render({}, value);
+    assert.doesNotMatch(block.text, /mount_issues/u);
   });
-  assert.doesNotThrow(() => apply(ctx, {}));
-  assert.deepEqual(registered, []);
-  assert.equal(errors.length, 2);
 });
 
-await test('apply() registers nothing on a non-macOS host', () => {
-  const original = Object.getOwnPropertyDescriptor(process, 'platform');
-  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
-  try {
+await test('apply() survives both tool names colliding', async () => {
+  await onPlatform('darwin', () => {
+    const { ctx, registered, errors } = wiringCtx({
+      collisions: new Set(['screen_permission', 'screenshot']),
+    });
+    assert.doesNotThrow(() => apply(ctx, {}));
+    assert.deepEqual(registered, []);
+    assert.equal(errors.length, 2);
+  });
+});
+
+await test('apply() registers nothing on a host with no engine', async () => {
+  await onPlatform('linux', () => {
     const { ctx, registered } = wiringCtx();
     apply(ctx, {});
     assert.deepEqual(registered, [], 'no capture tool may exist without a capture engine');
-  } finally {
-    Object.defineProperty(process, 'platform', original);
-  }
+  });
 });
 
 // Remove every capture the suite took. Done unconditionally, so a failing

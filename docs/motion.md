@@ -94,6 +94,31 @@ capture of 2388x1668, slower than the larger 3840x2160 main screen at 169ms,
 because the transport is not the same. Region captures were within a
 millisecond of each other on both.
 
+## The same question on Windows, and a different answer
+
+The table above is the macOS profile, where the fixed cost is small and the area
+is what costs. Windows inverts it. Measured on a 3840x2160 machine:
+
+| | cost |
+| --- | --- |
+| PowerShell start, `Add-Type`, assemblies | ~600ms, once per engine call |
+| a frame at 3840x2160 | ~150ms (63-82ms to read, 80-86ms to encode) |
+| a frame at 800x600 | ~16ms |
+| a complete single capture | 1000-1200ms, whatever the area |
+
+So the interval is not bounded by the area at all; it is bounded by the process
+start, and a burst taken as N calls would pay it N times — six frames of a 400ms
+animation sampled over six seconds, which is not a sample of it. Windows
+therefore takes the whole burst in **one** engine call: one process, one shim,
+one rectangle, N frames spaced by the interval. The result is a per-frame cost
+of about 150ms at full screen and 16ms at 800x600, which is the closest either
+platform gets to the macOS floor, and the self-test asserts a burst spacing
+under 700ms there precisely because a per-frame engine could not reach it.
+
+The advice that follows from it is the same on both systems, for different
+reasons: **capture the region the motion happens in**. On macOS that buys a
+lower floor; on Windows it buys a cheaper frame inside an already-cheap loop.
+
 ## Three numbers, any two of which settle the third
 
 A burst is described by how many frames, how far apart, and over how long. The

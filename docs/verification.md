@@ -7,9 +7,17 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-90 cases, all passing. They run without a harness: the logic modules are
-imported directly and the tool definitions are exercised through a stubbed
-context.
+114 cases, all passing, on Windows; 2 of them skip themselves there because they
+are about the macOS Screen Recording model. The suite runs without a harness:
+the logic modules are imported directly and the tool definitions are exercised
+through a stubbed context.
+
+It runs on both platforms the plugin serves, and CI runs it on both. Cases that
+are about a platform's own model — the macOS permission classification, the
+Windows script the engine would run — are asked of that model directly rather
+than of the host, so they execute wherever the suite happens to be running. That
+is what keeps the Windows half from being the untested half on a macOS machine,
+and the reverse.
 
 What they cover:
 
@@ -95,12 +103,13 @@ What they cover:
   string reads like a bug and tells the user nothing they can act on. The
   non-TCC branch is asserted not to mention Screen Recording at all, so an
   ordinary failure never misattributes blame to the grant;
-- tool wiring: `apply()` registers both tools on darwin and **registers
-  nothing** on a non-darwin host; that a tool-name collision leaves the host
-  running and the other tool registered; and that the collision is then
-  *discoverable* — `screen_permission` reports it, and its render drops the
-  clean-bill-of-health sentence rather than claiming a working screenshot tool
-  the plugin's own report contradicts;
+- tool wiring, asked of `apply()` with `process.platform` reporting each system
+  in turn so the answer is not the host's: both tools on macOS, `screenshot`
+  alone on Windows, and **nothing** on a host with no engine; that a tool-name
+  collision leaves the host running and the other tool registered; and that the
+  collision is then *discoverable* — `screen_permission` reports it, and its
+  render drops the clean-bill-of-health sentence rather than claiming a working
+  screenshot tool the plugin's own report contradicts;
 - the bundle patch carries the platform gate, and the package stays
   installable (`dsh.bundle` present, every required file in `files`);
 - the seam itself: that no OS-specific module is reachable from outside
@@ -116,14 +125,49 @@ What they cover:
   live where they cannot import each other, so this is the only thing keeping
   two copies of one fact from drifting — and the case was itself checked by
   making them disagree on purpose and watching it fail;
-- that the guide action never reports a state it did not observe: on a machine
+- the guide action never reports a state it did not observe: on a machine
   where the grant is already in place it opens nothing and explains nothing,
   and where it is missing it opens the pane and tells the model to confirm with
-  a check rather than assume the fix worked.
+  a check rather than assume the fix worked;
+- the Windows engine, as a pure mapping, on every platform: each mode onto the
+  rectangle Windows should read, `select` refused with its remedy, the session
+  preflight present in both scripts, DPI awareness declared *before* the screens
+  are enumerated (the order is the whole point — measured at 3072x1728 before
+  and 3840x2160 after on a 125%-scaled 4K panel), a path containing a quote
+  escaped by PowerShell's own rule, the base64 round trip through
+  `-EncodedCommand`, a burst carrying one path per frame and exactly one shim,
+  and the marked result line being read out of noisy stdout;
+- that the modes which wait for a person are the ones that really do, since that
+  set is what refuses a burst: macOS's `window` waits for a click and Windows'
+  does not, so a window burst is refused with one set and planned with the other,
+  and the hand-written set in `darwin.mjs` is held equal to the default in
+  `lib/capture.mjs`;
+- the Windows inventory as a pure function: main first, 1-based, each display
+  keeping its own origin, an unnamed display reported without inventing a size,
+  and an empty inventory treated as a failed reading rather than as a machine
+  with no screens;
+- the black-frame report in both directions: it fires at the threshold, stays
+  silent just below it — a false positive would put a warning on every capture a
+  user takes — and carries the likely causes plus the admission that a genuinely
+  black screen looks the same;
+- that the tool description is built from the platform's own briefing: the macOS
+  one still promises Screen Recording and the 155ms/56ms measurements, the
+  Windows one says capture needs no consent, that `select` is unavailable and
+  that a burst runs in one engine process, and neither carries the other's
+  claims;
+- that the wiring decisions hold for both platforms from either one, by asking
+  `apply()` what it registers while `process.platform` reports each in turn:
+  macOS gets both tools, Windows gets `screenshot` alone, and a host with no
+  engine gets nothing;
+- that a frame carrying a note still satisfies the declared output schema and
+  still renders its image — the note rides beside the picture in the envelope —
+  and that a capture without one renders exactly as it did before the field
+  existed.
 
-Cases that capture for real run only when the machine already has Screen
-Recording permission, so the suite is green before the grant as well. On CI
-they skip.
+Cases that capture for real run only when the machine can actually see its own
+screen — on macOS that means Screen Recording is granted, on Windows that the
+process is attached to a visible desktop — so the suite is green before the
+grant as well. On CI they skip: a hosted runner has no interactive desktop.
 
 Every capture the suite takes goes into a temporary directory created for the
 run and removed at the end, and the pruning case gets a directory of its own.
@@ -139,8 +183,10 @@ Booting a second harness instance against the real loader, with a profile
 containing only `dsh-base`, `dsh-web-app` and this plugin:
 
 - `dsh --profile verify --dump-config` shows the entry in the composed tree
-  with `disabled: !!js process.platform !== 'darwin'`, which is the gate
-  surviving composition;
+  carrying its platform gate, which is that gate surviving composition. At the
+  time of this run the gate read `disabled: !!js process.platform !== 'darwin'`,
+  since macOS was the only engine; section 8 re-ran the same check on Windows
+  against the expression as it stands now;
 - a deliberately throwing `apply()` produced
   `failed to apply loader entry screen-eye (dsh-screen-eye)`, proving the
   module is imported, resolved from the profile, and applied by the official
@@ -270,11 +316,116 @@ avoid. Failures are therefore also recorded and reported through
 `screen_permission`, which is the tool an agent reaches for when the screen
 misbehaves. The canary was removed after the run.
 
-## 7. What was reasoned about but not executed
+## 7. Windows, actually exercised
 
-- **Windows.** No capture engine is shipped, so nothing about Windows was run.
-  [`windows.md`](windows.md) records the assessment, including the parts of it
-  that are hypotheses rather than findings.
+The port is the one part of this project that could not have been written from
+the development machine as it was: macOS cannot run a Windows engine, and an
+untested engine would put a claim in the README that nobody had falsified. So it
+was written on Windows — one display, 3840x2160 at 125% scaling, Windows
+PowerShell 5.1, window station `WinSta0` in session 1 — and everything below was
+observed there.
+
+- **The four unattended modes**, through the engine and through the tool:
+
+  | mode | result |
+  | --- | --- |
+  | `screen` | 3840x2160 — the panel's true resolution |
+  | `display 1` | 3840x2160, through the index the inventory handed out |
+  | `region 100,200,640,480` | 640x480, exactly as asked |
+  | `region 0,0,320,240`, `frames: 3, interval_ms: 200` | three frames, one engine call, spacing ~200ms |
+  | `window` | 3840x2109 — the maximised foreground window, clamped to the desktop |
+
+- **DPI is not a detail.** The same panel reported 3072x1728 to a DPI-unaware
+  process and 3840x2160 after the shim declared per-monitor-v2 awareness, in that
+  order, with the awareness call in between. Windows PowerShell is unaware by
+  default, so the naive engine would have captured a 25% downscale of the screen
+  and called it a capture. The self-test now pins the order of those two
+  statements in the generated script, because a scaled capture looks exactly like
+  a correct one.
+- **The refusals name the cause**: `display 99` → "display 99 does not exist:
+  this machine reports 1 display(s)"; a region at `-9000,-9000` → "does not
+  overlap any display; this desktop spans 0,0 3840x2160"; `select` → the mode has
+  no Windows equivalent, with `region` suggested. All three are the cases where
+  the naive engine returns a black frame or a plausible picture of the wrong
+  thing instead.
+- **The black-frame note, end to end.** A rectangle overlapping the desktop by a
+  single pixel produced a frame that is black everywhere; the tool returned the
+  image *and* the note explaining what such a frame means, and the render put it
+  in the envelope beside the image. A real desktop capture produced
+  `blackPermille: 1` — 0.1% — and no note, which is the other half of the claim:
+  the check does not cry wolf on the ordinary case.
+- **The bytes the store is handed are the bytes it keeps.** `sharp` — the
+  library behind the attachment store — reports a Windows capture as `png`,
+  `uchar`, `srgb`, `hasProfile: false`, with no retained metadata, which is
+  exactly the store's `canPassThroughNormalization` condition. So the capture is
+  stored as written rather than converted at admission, and for a different
+  reason than on macOS: GDI+ writes `sRGB`, `gAMA` and `pHYs` but no `iCCP`,
+  `eXIf` or `iTXt`, so the strip step has nothing to remove (575870 bytes in,
+  575870 bytes out). What the *route* then projects for the model — a downscale
+  to its pixel budget — is the harness's own step and happens on both platforms
+  alike; see section 8.
+- **Timing, measured rather than assumed**: PowerShell start plus `Add-Type`
+  about 600ms; a full-screen frame ~150ms (63-82ms to read, 80-86ms to encode);
+  an 800x600 frame ~16ms; a complete single capture 1000-1275ms; the inventory
+  ~510ms. That profile — a fixed cost that dwarfs the frame — is why Windows
+  implements the optional `captureBurst` and takes a whole burst in one process,
+  and the live burst case asserts a spacing under 700ms, which a per-process
+  engine could not reach.
+- **The pointer.** `CopyFromScreen` never includes it, so `include_cursor` is a
+  claim about a path of this code: the shim draws it with `DrawIconEx` after the
+  copy and reports the call's own result, which the case asserts. The pixels
+  were not compared, because two live captures of the same rectangle differ for
+  other reasons as well.
+- **A path that would break the script.** A capture directory named `it's mine`
+  is quoted by PowerShell's own rule rather than by hope, asserted as a pure
+  case.
+
+Not verified on Windows, and recorded rather than implied away: a second display
+(the machine has only one — the ordering rule is asserted as a pure function
+against a two-display payload, and the index round trip only for index 1); a
+locked or disconnected session (producing that frame means locking the machine,
+which a test should not do to its user); a harness that really is running as a
+service (the preflight exists for that case and was verified in the direction
+that allows capture); and a visible console window proving that `windowsHide` is
+what prevents it, because the capture ran from a session that already had a
+console.
+
+## 8. Through the real loader, on Windows — and where that stopped
+
+The engine cases above run the engine; this run went through the official loader
+and a real agent turn, on the same Windows machine. An isolated profile
+(`verify`) was built from the shipped `headless` template with this checkout
+linked into it, which is the same shape section 2 used on macOS.
+
+- `dsh --profile verify --dump-config` composed the plugin into the tree with
+  `disabled: !!js process.platform !== 'darwin' && process.platform !== 'win32'`
+  — the gate, surviving composition, on a platform where it opens rather than
+  closes. (The same check on macOS, when there was one engine, is section 2.
+  What the expression *evaluates to* is checked against the engine registry on
+  every run by a self-test, because the loader has no access to the module.)
+- A one-shot agent turn was given the task *"Look at my screen and report
+  back"* with no tool name and no hint that a capture tool exists. It found
+  `screenshot` from the description alone and called it, which is the claim
+  section 4 checked on macOS now holding on Windows as well.
+- That call was **refused**, correctly: the only model route configured on this
+  machine (`deepseek-flash`) declares no image input, and the guard said so,
+  naming the model and the setting that lifts it. So a Windows mount also
+  exercises the guard, and its message is the one the model reads.
+- With the guard lifted, the capture ran end to end: a 3840x2160 capture was
+  committed to the attachment store — the harness itself reported
+  `[image omitted because this model accepts text only; attachment
+  sha256:51f02017]` — projected to 2730x1536 for that route, and written to the
+  output directory the profile's patch configured.
+
+What this does **not** establish: that a model actually saw the pixels on
+Windows. The only route configured here is text-only, so the last link is
+evidenced by the harness assembling an image block for the request and by the
+macOS runs in sections 3 and 4, not by an agent describing a Windows screen. It
+is an environment limit rather than a property of the port, and it is the same
+limit section 9 records for a text-only route anywhere.
+
+## 9. What was reasoned about but not executed
+
 - **The client-side settings surface.** None is shipped in this version, so
   there is no browser UI to verify.
 - **A model without image input.** Refused up front; verified by self-test with
@@ -282,8 +433,10 @@ misbehaves. The canary was removed after the run.
 - **Retention over a long run.** The rule and its file-level behaviour are
   tested; that the default cap of 50 is the right number is a judgement, not a
   measurement.
-- **`window` and `select`.** Interactive by design, so no automated case can
-  complete them; the flag mapping is asserted and nothing more is claimed.
+- **`window` and `select` on macOS.** Interactive by design, so no automated
+  case can complete them; the flag mapping is asserted and nothing more is
+  claimed. On Windows `window` is not interactive and is exercised for real,
+  while `select` is refused by design.
 - **Attachment-store rejection.** `saveImage` can refuse an image that exceeds
   the deployment's limits (8192 px per side, 64 megapixels, 20 MB by default).
   A single display cannot reach those — the default capture is one display

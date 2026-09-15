@@ -1,7 +1,7 @@
 {
   "name": "dsh-screen-eye",
   "version": "0.1.0",
-  "description": "Autonomous screen vision for DeepSeek Harness on macOS: the agent captures the screen and receives the image itself in one call.",
+  "description": "Autonomous screen vision for DeepSeek Harness on macOS and Windows: the agent captures the screen and receives the image itself in one call.",
   "type": "module",
   "license": "MIT",
   "author": "davidekingsss",
@@ -39,6 +39,7 @@
     "screenshot",
     "screen-capture",
     "macos",
+    "windows",
     "vision",
     "tcc"
   ],

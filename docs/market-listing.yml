@@ -18,8 +18,8 @@ category: vision
 description:
   # Quoted because the line contains ": " — unquoted, YAML reads it as a
   # nested key and the submission fails to parse.
-  en: 'macOS screen capture for the agent: one tool captures the screen and returns the image itself, and a second tool reports whether Screen Recording is granted and opens the exact settings pane when it is not.'
-  zh: '面向 agent 的 macOS 截屏：一个工具截屏并把图片本身返回给模型，另一个工具报告屏幕录制授权状态，未授权时直接打开对应的系统设置面板。'
+  en: 'Agent screen capture on macOS and Windows: one tool captures the screen and returns the image itself, a burst of frames runs in a single engine call, and on macOS a second tool reports whether Screen Recording is granted and opens the exact settings pane when it is not.'
+  zh: 'macOS 与 Windows 上的 agent 截屏：一个工具截屏并把图片本身返回给模型，连拍在同一 个引擎进程内完成；macOS 上另有一个工具报告屏幕录制授权状态，未授权时直接打开对应的系统设置面板。'
 # ---------------------------------------------------------------------------
 #
 # Claims in the description, and where each is verifiable in the repo:
@@ -28,20 +28,27 @@ description:
 #       -> index.mjs registers `screenshot`; lib/screenshot-tool.mjs returns a
 #          value whose `render` emits an `image` content block
 #          (lib/image.mjs `imageContent`).
-#   "a second tool reports whether Screen Recording is granted"
+#   "a burst of frames runs in a single engine call"
+#       -> lib/platform/win32.mjs `captureBurst`, taken up by
+#          lib/capture.mjs `captureFrames`; asserted live by the case that
+#          requires a spacing under 700ms, which a per-frame engine cannot meet.
+#   "on macOS a second tool reports whether Screen Recording is granted"
 #       -> `screen_permission` with action "check";
 #          lib/permission.mjs `probeScreenRecording` performs a real capture
-#          and classifies the result.
+#          and classifies the result. Not registered on Windows, which has no
+#          grant to report (lib/platform/win32.mjs declares `permission: null`).
 #   "opens the exact settings pane when it is not"
-#       -> `screen_permission` with action "open_settings";
+#       -> `screen_permission` with action "guide";
 #          lib/permission.mjs `openScreenRecordingSettings`.
-#   "macOS" (the entry does not claim other platforms)
-#       -> cordis.patch.yml `disabled: !!js process.platform !== 'darwin'`,
-#          re-checked in index.mjs `apply`.
+#   "macOS and Windows" (and nothing else)
+#       -> cordis.patch.yml `disabled: !!js process.platform !== 'darwin' &&
+#          process.platform !== 'win32'`, re-checked in index.mjs `apply`, with a
+#          self-test holding the expression and the engine registry together.
 #
 # Checklist from the contributing guide:
 #   [x] package.json declares dsh.bundle with a cordis.patch.yml
-#   [x] real, working code (52 self-test cases, run with `node test/selftest.mjs`)
+#   [x] real, working code (114 self-test cases, run with `node test/selftest.mjs`
+#       on macOS and on Windows)
 #   [x] `dsh-plugin` topic added to the repository
 #   [x] description states what the plugin does, no superlatives
 #   [x] category matches what the plugin does
@@ -78,12 +85,22 @@ description:
 #                                     needs is in the tarball or fetched by a
 #                                     postinstall step.
 #
-# What none of them do is the thing this plugin exists for: an agent-callable
-# tool on macOS that returns the image itself in the same call, whose
-# permission story is handled rather than assumed. The macOS entries either
-# need a human at a hotkey or ship a native helper; the agent-callable ones are
-# on Windows. This one is a single tool plus the onboarding for the grant that
-# tool needs, with no compiled artefact in between.
+# What none of them do is the thing this plugin exists for: a tool the agent
+# calls by itself, on macOS *and* on Windows, that returns the image itself in
+# the same call — with the permission story handled rather than assumed on
+# macOS, and with the two Windows-specific ways a capture can succeed and still
+# be useless handled rather than shipped. The macOS entries either need a human
+# at a hotkey or ship a native helper; the agent-callable ones are Windows-only,
+# and reading them is what this port was measured against: a Windows engine that
+# ignored DPI awareness captures a downscaled copy of the screen, and one that
+# ignores the session captures a black frame and reports success. Both are
+# covered here by construction (docs/windows.md, docs/verification.md).
+#
+# On Windows specifically, this entry adds: a burst taken in one engine process,
+# because a PowerShell start per frame would make the advertised interval
+# unreachable; the session preflight and the all-black frame report; per-display
+# origins in the inventory, without which a region on a second screen is not
+# expressible; and one plugin for both platforms instead of one per platform.
 #
 # ---------------------------------------------------------------------------
 # Local rehearsal of the pull-request checks

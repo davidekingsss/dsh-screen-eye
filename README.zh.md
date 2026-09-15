@@ -1,8 +1,8 @@
 # dsh-screen-eye
 
-给 macOS 上的 DeepSeek Harness 装一只**自主的眼睛**：agent 截屏后**在同一次工具调用里直接拿到图**，于是它能自己去看正在运行的应用、弹窗、报错，或者自己刚写的界面——不必再让你手动截图。
+给 macOS 与 Windows 上的 DeepSeek Harness 装一只**自主的眼睛**：agent 截屏后**在同一次工具调用里直接拿到图**，于是它能自己去看正在运行的应用、弹窗、报错，或者自己刚写的界面——不必再让你手动截图。
 
-仅支持 macOS。无原生构建步骤、不带预编译二进制、零依赖。
+无原生构建步骤、不带预编译二进制、零依赖。
 
 ## 它提供什么
 
@@ -11,12 +11,14 @@
 | 工具 | 作用 |
 |---|---|
 | `screenshot` | 截屏，并把图片本身作为 `image` 内容块返回给模型——模型是真的看得见。 |
-| `screen_permission` | 报告 macOS 当前是否允许本进程截屏；用 `action: "guide"` 可直接打开对应的系统设置面板并给出需要授权的路径。 |
+| `screen_permission` | 在 macOS 上报告本进程当前是否允许截屏；用 `action: "guide"` 可直接打开对应的系统设置面板并给出需要授权的路径。Windows 没有这项权限可报告，因此该工具在 Windows 上不注册。 |
 
 `mode` 决定截什么：`screen`（默认，主显示器）、`display`（按序号指定某一块
-屏幕）、`region`（指定矩形，原点可为负，因此在主屏左侧或上方的显示器也能
-截到）、`displays`（不截图，只列出已连接的屏幕及 `display` 需要的序号），
-以及需要人交互的 `window` / `select`（等待用户点选窗口或拖拽出选区）。
+屏幕）、`region`（指定矩形，原点是主屏左上角，因此在主屏左侧或上方的显示器
+取负坐标）、`displays`（不截图，只列出已连接的屏幕，以及 `display` 需要的序号
+和每块屏幕在 Windows 上的起点坐标），以及需要人交互的 `window` / `select`
+（等待用户点选窗口或拖拽出选区）。Windows 没有系统级选区工具，所以在那里
+`select` 会被明确拒绝并说明原因，而 `window` 指的是当前在最前面的窗口。
 
 把 `frames` 设为大于 1，一次调用就会按 `interval_ms` 的间隔连拍那么多张并全部返回，
 这是"看清随时间变化的过程"的方式。它**刻意不是 GIF**：harness 以单帧存储图片，
@@ -60,6 +62,10 @@ macOS 认为要对整棵进程树负责的那个应用。而 DeepSeek Harness �
 - **把步骤当作工具结果返回**：于是 agent 交给你的是一份修复指引，而不是一段
   报错。
 
+Windows 没有这道闸门，也就没有这段故事：那里的难点是截图可能**成功但没用**——
+进程若不感知 DPI，拿到的就是屏幕的降采样副本；若没挂在交互式桌面上，拿到的
+就是一张黑图。两者都在下面的 [Windows](#windows) 一节里被解决。
+
 ## 安装
 
 ```sh
@@ -67,15 +73,22 @@ dsh plugin --profile web add github:davidekingsss/dsh-screen-eye
 # 然后重启 dsh
 ```
 
+```sh
+dsh plugin --profile web add github:davidekingsss/dsh-screen-eye
+# 然后重启 dsh
+```
+
+macOS 与 Windows 是同一条安装命令，平台层自己挑引擎。
+
 若用本地检出目录，而不是已发布的源：
 
 ```sh
-dsh plugin --profile web add link:/path/to/dsh-screen-eye
+dsh plugin --profile web add -w link:/path/to/dsh-screen-eye
 ```
 
 本插件没有构建步骤、没有依赖，安装期不编译任何东西。
 
-## 授予屏幕录制权限（一次性）
+## 授予屏幕录制权限（macOS，一次性）
 
 调用一次 `screenshot`。如果缺权限，返回结果会明确告诉你该怎么做；
 `screen_permission` 配合 `action: "guide"` 会走完整个引导：先检查，只在授权确实缺失时
@@ -91,6 +104,8 @@ dsh plugin --profile web add link:/path/to/dsh-screen-eye
 若你是从终端启动 harness，改为给那个终端 App 授权，效果相同。
 
 > macOS 可能定期要求重新确认此权限，把同一个开关重新打开即可。
+
+Windows 完全不需要这些，见 [Windows](#windows)。
 
 ## 配置
 
@@ -116,11 +131,13 @@ dsh plugin --profile web add link:/path/to/dsh-screen-eye
 | `requireImageCapableModel` | `true` | 当调用方模型未声明图片输入时直接拒绝，而不是返回一张它看不见的图。 |
 | `deleteAfterCommit` | `false` | 提交到附件存储后删除 PNG。默认关闭，以便返回的路径可再次读取。 |
 
-提交到存储时会**去掉** macOS 给每张截图附带的 ICC 描述文件、EXIF 与 iTXt 记录，
-而磁盘上的文件保留它们。这几个记录正是附件存储"保留原字节还是重编码"的判定依据
-——带元数据的图片不允许直通——所以去掉它们，截图才能**无损**抵达模型，而不是被
-编码成质量 85 的 WebP。存储无论如何都会转成 sRGB，因此没有任何存活下来的信息被
-丢掉；而你能打开的那个文件仍然带着它的色彩描述。
+提交到存储时会**去掉**那些会让它无法无损保存的记录。在 macOS 上就是去掉
+`screencapture` 给每张截图附带的 ICC 描述文件、EXIF 与 iTXt 记录，而磁盘上的
+文件保留它们：这几个记录正是附件存储"保留原字节还是重编码"的判定依据——带
+元数据的图片不允许直通——所以去掉它们，截图才能**按原字节存下**，而不是被编码
+成质量 85 的 WebP。在 Windows 上则没有东西可去：GDI+ 这几个记录一个都不写，
+截图本来就已满足存储的直通条件。存储无论如何都会转成 sRGB，因此没有任何存活
+下来的信息被丢掉；而你能打开的那个文件仍然带着它的色彩描述。
 
 清理**只会删除本插件自己写出的文件**：`outputDir` 的直接子项、且文件名严格匹配
 本插件生成的形状（`shot-<时间戳>-<后缀>.png`）的普通文件。它绝不递归、绝不动
@@ -140,8 +157,9 @@ dsh plugin --profile web add link:/path/to/dsh-screen-eye
 ## 实现
 
 ```
-screenshot 工具 ──▶ lib/capture.mjs ──▶ /usr/sbin/screencapture ──▶ PNG
-                       │
+screenshot 工具 ──▶ lib/capture.mjs ──▶ 平台引擎 ──▶ PNG
+                       │                 macOS：screencapture
+                       │                 Windows：PowerShell + System.Drawing
                        └──▶ attachments.saveImage() ──▶ image 内容块 ──▶ 模型
 ```
 
@@ -151,31 +169,47 @@ harness 在模型看到图片之前，会先按路由的像素预算投影——
 把上限调小省不下一个 token；而在这里做缩放，会在"模型在图上量到的位置"与"`region` 需要的
 屏幕坐标"之间**再多插一级缩放**，而那正是放大工作流所依赖的映射。
 
-截图走系统自带的 `screencapture(1)`，而不是自带一个私有辅助二进制。这是刻意的
-取舍：`screencapture` 不需要任何编译产物、由 Apple 签名，并且在当前 macOS 上
-内部已经使用 ScreenCaptureKit。自带辅助二进制则意味着要产出多架构构建和一个
-ad-hoc 签名——而它的哈希每次重新构建都会变，**哈希一变，用户的屏幕录制授权
-就静默失效**。
+两个引擎都不自带二进制。macOS 走系统自带的 `screencapture(1)`：它不需要任何
+编译产物、由 Apple 签名，并且在当前 macOS 上内部已经使用 ScreenCaptureKit；
+自带辅助二进制则意味着要产出多架构构建和一个 ad-hoc 签名——而它的哈希每次
+重新构建都会变，**哈希一变，用户的屏幕录制授权就静默失效**。Windows 走每一台
+机器都有的 Windows PowerShell 5.1，通过 `Add-Type` 在内存里临时编译一层垫片
+来驱动 `System.Drawing`，一次调用结束即消失。
 
 图片通过与内置 `read_image` 完全相同的附件通道抵达模型，因此其校验、降采样与
 会话回放行为与任何其他图片一致。
 
 ## 平台支持
 
-仅 macOS，且在两处强制：bundle patch 带
-`disabled: !!js process.platform !== 'darwin'`，其他平台**连模块都不会被
-import**；`apply()` 再检查一次，使得绕过 patch 的直接挂载也无法注册没有引擎
-的截图工具。
+macOS 与 Windows，且在两处强制：bundle patch 带
+`disabled: !!js process.platform !== 'darwin' && process.platform !== 'win32'`，
+其他平台**连模块都不会被 import**；`apply()` 再检查一次，使得绕过 patch 的直接
+挂载也无法注册没有引擎的截图工具。
 
-Windows 不存在等价的权限闸门——任何进程都可以截屏，所以 Windows 引擎根本不
-需要引导流程。之所以没有包含它，是因为在本仓库的开发环境里无法测试它，而
-声明未经测试的平台支持，比明说边界更糟。
-[`docs/windows.md`](docs/windows.md) 记录了关于它的调研结论、一个朴素实现会
-踩到的坑，以及如果你想加，接缝在哪里。
+## Windows
+
+Windows 不需要授权也不需要引导——任何挂在交互式桌面上的进程都能截屏——所以
+那里根本不注册 `screen_permission`，`screenshot` 就是全部工具面。与 macOS 真正
+不同的有四点，每一点都是被解决的，而不是被写进文档绕过的；
+[`docs/windows.md`](docs/windows.md) 里有实测数据。
+
+- **缩放。** Windows PowerShell 默认是 DPI 不感知的，而 DPI 不感知的进程拿到的
+  是桌面的**降采样副本**：在 125% 缩放的 3840×2160 面板上，它报告并截取的是
+  3072×1728。引擎在读取任何东西之前先声明 per-monitor 感知，取到的是真实像素。
+- **看不见的会话。** 没有挂在交互式窗口站上的进程不会失败——`CopyFromScreen`
+  返回黑图，朴素实现会把它当成"成功截到一张黑屏"。引擎先检查窗口站与会话并
+  点名拒绝，而整帧全黑的照片会**带着说明**返回，说明这通常意味着什么。
+- **连拍。** Windows 上单次截图约 1 秒，且几乎与面积无关，因为每次调用都要付一次
+  PowerShell 启动。六帧连拍若拆成六次调用，会把一段 400ms 的动画采样成六秒，
+  所以 Windows 把整段连拍放进同一个引擎进程，计划里的间隔才成为可达的。
+- **`select`。** Windows 没有系统级选区工具，所以该模式被明确拒绝并给出原因、
+  建议改用 `region`；`window` 截的是当前在最前面的窗口，因为同样没有可点的东西。
 
 ## 环境要求
 
-- macOS，以及 harness 自身的 Node 运行时（截图链路不需要额外安装任何包）。
+- macOS 或 Windows，以及 harness 自身的 Node 运行时。两条截图链路都不需要额外
+  安装任何包，安装时也不编译任何东西。
+- macOS 上需要给运行 harness 的进程授予「屏幕录制」权限（见上文）。Windows 不需要。
 - 一个声明了图片输入的模型路由。保持 `requireImageCapableModel` 默认值时，
   纯文本路由会在事前被拒绝，并在消息里点名该模型，而不是悄悄截一张它看不见
   的图。
@@ -188,16 +222,21 @@ node test/selftest.mjs
 ```
 
 该测试套件无需启动 harness：逻辑模块被直接导入，工具定义经由桩上下文执行，
-因此在一台从未装过 harness 的机器上同样能跑——CI 走的就是这条路。真正实拍的
-用例只在本机已获得屏幕录制权限时运行，所以在授权之前套件依然是绿的。
+因此在一台从未装过 harness 的机器上同样能跑——CI 走的就是这条路，macOS 与
+Windows 上各跑一遍。真正实拍的用例只在本机确实看得见自己的屏幕时运行——
+macOS 上要有屏幕录制权限，Windows 上要有可见桌面——所以在授权之前套件依然是绿的。
+
+针对某个平台自身模型的用例，直接问那个平台的模型，而不是问当前宿主机：于是
+Windows 引擎生成的 PowerShell 在 macOS CI 上也会被断言，macOS 的权限文案在
+Windows 上也会被断言。这是刻意的：只有当另一侧也被检查时，这条接缝才有意义。
 
 插件导入的三个 `@deepseek-ai/*` 包在 `devDependencies` 里**精确钉版本**，这是
 刻意的：这几个包把当前版本线发在 `next` dist-tag 下，而 `latest` 仍指向一个
 老得多的版本，不钉版本就会装到旧的那一个、import 直接失败。
 
 [`docs/verification.md`](docs/verification.md) 记录了**实际跑过**的内容——
-自测、隔离 profile 中的加载器验收、以及一次端到端 agent 回合——并说明每一项
-证明了什么、没证明什么。
+两个平台上的自测、隔离 profile 中的加载器验收、以及端到端 agent 回合——并说明
+每一项证明了什么、没证明什么。
 
 ## 许可证
 
