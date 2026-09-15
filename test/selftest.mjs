@@ -11,6 +11,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -26,6 +27,7 @@ import {
   planCapture,
   screencaptureArgs,
 } from '../lib/capture.mjs';
+import { run } from '../lib/exec.mjs';
 import { imageContent } from '../lib/image.mjs';
 import {
   DENIED,
@@ -348,6 +350,79 @@ await test('reports the downscale multiplier when the store resized', () => {
     },
   });
   assert.match(text.text, /multiply coordinates by 2\.00/u);
+});
+
+process.stdout.write('\nchild process execution\n');
+
+await test('returns the exit code and both streams', async () => {
+  const result = await run('/bin/sh', ['-c', 'echo out; echo err >&2; exit 3']);
+  assert.equal(result.code, 3);
+  assert.equal(result.stdout.trim(), 'out');
+  assert.equal(result.stderr.trim(), 'err');
+});
+
+await test('does not spawn at all when the signal is already aborted', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-eye-exec-'));
+  const marker = join(dir, 'ran');
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => run('/bin/sh', ['-c', `touch ${JSON.stringify(marker)}`], { signal: controller.signal }),
+      (error) => error.name === 'AbortError',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(existsSync(marker), false, 'an aborted call must not start its command');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test('cancelling a call actually kills the child', async () => {
+  // The claim in lib/exec.mjs is that cancellation kills the child, and it
+  // matters because the failure is visible on the user's screen: an
+  // interactive screencapture left running keeps its crosshair up after the
+  // tool call is gone. The marker is written well after the abort, so its
+  // absence proves the process died rather than merely being detached from a
+  // promise nobody awaits any more.
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-eye-exec-'));
+  const marker = join(dir, 'survived');
+  try {
+    const controller = new AbortController();
+    const started = Date.now();
+    const settled = run('/bin/sh', ['-c', `sleep 2; touch ${JSON.stringify(marker)}`], {
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 150);
+    await assert.rejects(() => settled, (error) => error.name === 'AbortError');
+    assert.ok(Date.now() - started < 1500, 'a cancelled call must not wait for the child');
+    await new Promise((resolve) => setTimeout(resolve, 2400));
+    assert.equal(existsSync(marker), false, 'the child outlived the cancellation');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test('a capture that overruns its budget is killed, not abandoned', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-eye-exec-'));
+  const marker = join(dir, 'survived');
+  try {
+    await assert.rejects(
+      () => run('/bin/sh', ['-c', `sleep 2; touch ${JSON.stringify(marker)}`], { timeoutMs: 150 }),
+      /exceeded its 150ms budget/u,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2400));
+    assert.equal(existsSync(marker), false, 'a timed-out child must not be left running');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test('a command that cannot be spawned rejects instead of hanging', async () => {
+  await assert.rejects(
+    () => run('/nonexistent/binary-that-does-not-exist', []),
+    (error) => error.code === 'ENOENT',
+  );
 });
 
 process.stdout.write('\npermission diagnosis\n');

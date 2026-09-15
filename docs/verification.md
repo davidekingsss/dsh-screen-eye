@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-52 cases, all passing. They run without a harness: the logic modules are
+57 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -37,6 +37,13 @@ What they cover:
   are applied on different paths and a silent drift would make behaviour
   depend on how the plugin loaded;
 - the image content blocks, including the downscale multiplier;
+- child-process execution, which is what makes the cancellation claim in
+  `lib/exec.mjs` true rather than aspirational: an already-aborted call never
+  spawns, cancelling mid-flight and exceeding the budget both **kill** the child
+  — proved by a marker the child would have written two seconds later, not by
+  observing that a promise rejected — and an unspawnable command rejects
+  instead of hanging. This matters because the visible failure would be a
+  crosshair left on the user's screen;
 - permission diagnosis: a TCC denial is classified separately from every other
   failure, and the guidance names the exact executable to grant;
 - the `screen_permission` tool itself — its live report on this machine, that
@@ -173,3 +180,9 @@ misbehaves. The canary was removed after the run.
   measurement.
 - **`window` and `select`.** Interactive by design, so no automated case can
   complete them; the flag mapping is asserted and nothing more is claimed.
+- **Attachment-store rejection.** `saveImage` can refuse an image that exceeds
+  the deployment's limits (8192 px per side, 64 megapixels, 20 MB by default).
+  A single display cannot reach those — the default capture is one display
+  precisely so it is one file — so the store's errors are left to propagate
+  rather than translated into advice for a case current hardware does not
+  produce. Worth revisiting if a display larger than 8K ships.
