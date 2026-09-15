@@ -1,0 +1,155 @@
+# dsh-screen-eye
+
+An autonomous eye for DeepSeek Harness on macOS: the agent captures the screen
+and receives the picture **in the same tool call**, so it can look at a running
+app, a dialog, an error or its own UI work without asking you for a screenshot.
+
+macOS only. No native build step, no bundled binary, no dependencies.
+
+## What it adds
+
+Two model-callable tools:
+
+| Tool | What it does |
+|---|---|
+| `screenshot` | Captures the screen and returns the image itself, as an `image` content block the model can see. |
+| `screen_permission` | Reports whether macOS currently allows this process to capture, and opens the exact System Settings pane when it does not. |
+
+`mode` selects what is captured: `screen` (default, whole desktop), `display`
+(one display), `region` (a rectangle), or the interactive `window` / `select`,
+which wait for the user to click a window or drag a rectangle.
+
+## Why this plugin exists
+
+Most screenshot tooling assumes the hard part is capturing pixels. On macOS the
+hard part is **permission**, and it fails in a way that looks like a bug:
+
+```
+screencapture: could not create image from display
+```
+
+macOS gates screen capture behind the Screen Recording permission, keyed to the
+**responsible process** — the application macOS holds accountable for a whole
+process tree. A DeepSeek Harness host is often not a normal GUI application.
+The in-app plugin market restarts the host through a detached helper, so the
+host is reparented to `launchd` and has no application anywhere above it. When
+such a process asks for the screen, macOS cannot attribute the request to
+anything the user could grant, so it **denies it without ever showing a
+prompt**.
+
+The permission cannot be granted programmatically: the TCC databases are
+SIP-protected, `tccutil` only resets, and `CGRequestScreenCaptureAccess`
+refuses to prompt for a process that is not an app bundle. So this plugin does
+what is actually possible:
+
+- it **detects** the denial by attempting a real capture and classifying the
+  result, rather than guessing;
+- it **computes the exact executable** that must be granted, from the running
+  host, instead of describing it generically;
+- it **opens the exact settings pane** on request;
+- and it returns those steps as the tool result, so the agent can hand you a
+  fix rather than a stack trace.
+
+## Install
+
+```sh
+dsh plugin --profile web add dsh-screen-eye
+# then restart dsh
+```
+
+## Grant Screen Recording (once)
+
+Call `screenshot` once. If permission is missing, the result tells you exactly
+what to do, and `screen_permission` with `action: "open_settings"` opens the
+pane for you. In short:
+
+1. Open **System Settings → Privacy & Security → Screen & System Audio
+   Recording**.
+2. Click **+**, press **⌘⇧G**, paste the path the tool reported (normally the
+   `node` binary running the harness), and select it.
+3. Turn its switch on.
+
+No restart is needed — the grant applies to the next capture.
+
+If you start the harness from a terminal, granting that terminal application
+instead has the same effect.
+
+> macOS may periodically ask you to re-confirm this permission. Re-enabling the
+> same switch is enough.
+
+## Configuration
+
+All keys are optional.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `outputDir` | `<DSH home>/screen-eye` | Where captured PNGs are written. |
+| `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
+| `timeoutMs` | `120000` | Cooperative budget for one capture. |
+| `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |
+| `deleteAfterCommit` | `false` | Delete the PNG once it is committed to the attachment store. Off by default, so the returned path stays re-readable. |
+
+```yaml
+# cordis.patch.yml
+- insert:
+    - id: screen-eye
+      name: dsh-screen-eye
+      config:
+        locale: zh
+        outputDir: /Users/me/Pictures/agent-shots
+```
+
+## How it works
+
+```
+screenshot tool ──▶ lib/capture.mjs ──▶ /usr/sbin/screencapture ──▶ PNG
+                       │
+                       └──▶ attachments.saveImage() ──▶ image content block ──▶ model
+```
+
+The capture shells out to the system `screencapture(1)` rather than shipping a
+private helper. That choice is deliberate: `screencapture` needs no compiled
+artefact, is Apple-signed, and already uses ScreenCaptureKit internally on
+current macOS. A private helper would instead require per-architecture builds
+and an ad-hoc signature whose hash changes on every rebuild — and a changed
+hash silently invalidates the user's Screen Recording grant.
+
+The image reaches the model through the same attachment path the built-in
+`read_image` tool uses, so the value is validated, downscaled and replayed
+exactly like any other image in the session.
+
+## Platform support
+
+macOS only, enforced in two places: the bundle patch carries
+`disabled: !!js process.platform !== 'darwin'`, so on another platform the
+module is never imported, and `apply()` re-checks so a direct mount cannot
+register capture tools that have no engine.
+
+Windows has no equivalent permission gate — any process may capture the screen,
+so a Windows engine would need no onboarding flow at all. It is not included
+because it cannot be tested from this repository's development environment, and
+claiming untested platform support would be worse than declaring the limit.
+
+## Requirements
+
+- macOS with the harness's Node runtime (the capture path needs no extra
+  package).
+- A model route that declares image input. With `requireImageCapableModel`
+  left at its default, a text-only route is refused up front with a message
+  naming the model, instead of silently capturing something the model cannot
+  see.
+
+## Development
+
+```sh
+node test/selftest.mjs
+```
+
+The suite runs without a harness: the logic modules are imported directly and
+the tool definitions are exercised through a stubbed context. Cases that
+capture for real run only when this machine already has Screen Recording
+permission, so the suite stays green before the grant.
+
+## License
+
+MIT

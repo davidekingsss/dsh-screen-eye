@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# The self-test links the harness profile's node_modules so the official
+# packages resolve during development. Written without a trailing slash on
+# purpose: a trailing slash matches directories only, and this entry is a
+# symlink, which git would otherwise happily commit.
+node_modules
+
+# Screenshots produced by running the test suite locally.
+*.png
