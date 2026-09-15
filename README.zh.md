@@ -47,9 +47,17 @@ macOS 认为要对整棵进程树负责的那个应用。而 DeepSeek Harness �
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-screen-eye
+dsh plugin --profile web add github:davidekingsss/dsh-screen-eye
 # 然后重启 dsh
 ```
+
+若用本地检出目录，而不是已发布的源：
+
+```sh
+dsh plugin --profile web add link:/path/to/dsh-screen-eye
+```
+
+本插件没有构建步骤、没有依赖，安装期不编译任何东西。
 
 ## 授予屏幕录制权限（一次性）
 

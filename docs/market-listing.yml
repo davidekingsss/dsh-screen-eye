@@ -1,0 +1,48 @@
+# Market submission for awesome-dsh-plugin.
+#
+# The contributing guide requires the target repo to be at least 1 day old
+# (checked automatically by CI), so this file is staged here and the PR is
+# opened the day after the repository was created.
+#
+# Open a PR against https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
+# adding exactly one file, named after the repo at:
+#
+#   data/plugins/davidekingsss__dsh-screen-eye.yml
+#
+# Contents of that file:
+#
+# ---------------------------------------------------------------------------
+url: https://github.com/davidekingsss/dsh-screen-eye
+name: davidekingsss/dsh-screen-eye
+category: vision
+description:
+  # Quoted because the line contains ": " — unquoted, YAML reads it as a
+  # nested key and the submission fails to parse.
+  en: 'macOS screen capture for the agent: one tool captures the screen and returns the image itself, and a second tool reports whether Screen Recording is granted and opens the exact settings pane when it is not.'
+  zh: '面向 agent 的 macOS 截屏：一个工具截屏并把图片本身返回给模型，另一个工具报告屏幕录制授权状态，未授权时直接打开对应的系统设置面板。'
+# ---------------------------------------------------------------------------
+#
+# Claims in the description, and where each is verifiable in the repo:
+#
+#   "one tool captures the screen and returns the image itself"
+#       -> index.mjs registers `screenshot`; lib/screenshot-tool.mjs returns a
+#          value whose `render` emits an `image` content block
+#          (lib/image.mjs `imageContent`).
+#   "a second tool reports whether Screen Recording is granted"
+#       -> `screen_permission` with action "check";
+#          lib/permission.mjs `probeScreenRecording` performs a real capture
+#          and classifies the result.
+#   "opens the exact settings pane when it is not"
+#       -> `screen_permission` with action "open_settings";
+#          lib/permission.mjs `openScreenRecordingSettings`.
+#   "macOS" (the entry does not claim other platforms)
+#       -> cordis.patch.yml `disabled: !!js process.platform !== 'darwin'`,
+#          re-checked in index.mjs `apply`.
+#
+# Checklist from the contributing guide:
+#   [x] package.json declares dsh.bundle with a cordis.patch.yml
+#   [x] real, working code (30 self-test cases, run with `node test/selftest.mjs`)
+#   [x] repository at least 1 day old before the PR is opened
+#   [x] `dsh-plugin` topic added to the repository
+#   [x] description states what the plugin does, no superlatives
+#   [x] category matches what the plugin does

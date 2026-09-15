@@ -53,9 +53,18 @@ what is actually possible:
 ## Install
 
 ```sh
-dsh plugin --profile web add dsh-screen-eye
+dsh plugin --profile web add github:davidekingsss/dsh-screen-eye
 # then restart dsh
 ```
+
+From a local checkout, instead of a published source:
+
+```sh
+dsh plugin --profile web add link:/path/to/dsh-screen-eye
+```
+
+The plugin has no build step and no dependencies, so nothing is compiled at
+install time.
 
 ## Grant Screen Recording (once)
 
