@@ -1,0 +1,28 @@
+name: test
+
+# The suite is the project's evidence that the code works, so it runs on every
+# push rather than only when someone remembers to run it. Development runs it
+# with the harness profile's node_modules on the resolution path; here it is
+# installed from the registry instead, which also proves the package is
+# self-contained enough to test on a machine that has never seen the harness.
+#
+# The versions are pinned exactly and deliberately. These packages publish the
+# current line under the `next` dist-tag, and their `latest` tag still points at
+# a much older release: an unpinned install silently resolves to the old one and
+# the import fails.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: node test/selftest.mjs

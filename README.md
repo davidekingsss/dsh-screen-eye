@@ -151,13 +151,24 @@ claiming untested platform support would be worse than declaring the limit.
 ## Development
 
 ```sh
+npm install
 node test/selftest.mjs
 ```
 
 The suite runs without a harness: the logic modules are imported directly and
-the tool definitions are exercised through a stubbed context. Cases that
-capture for real run only when this machine already has Screen Recording
-permission, so the suite stays green before the grant.
+the tool definitions are exercised through a stubbed context, so it works on a
+machine that has never seen the harness — which is also what CI does. Cases
+that capture for real run only when the machine already has Screen Recording
+permission, so the suite stays green before the grant too.
+
+The three `@deepseek-ai/*` packages the plugin imports are pinned exactly in
+`devDependencies`, and that is deliberate: they publish the current line under
+the `next` dist-tag while their `latest` tag still points at a much older
+release, so an unpinned install resolves to the old one and the import fails.
+
+[`docs/verification.md`](docs/verification.md) records what has actually been
+run — the self-test, loader acceptance in an isolated profile, and one
+end-to-end agent turn — and what each result does and does not prove.
 
 ## License
 
