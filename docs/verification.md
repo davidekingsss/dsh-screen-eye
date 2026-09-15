@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-48 cases, all passing. They run without a harness: the logic modules are
+52 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -51,7 +51,11 @@ What they cover:
   non-TCC branch is asserted not to mention Screen Recording at all, so an
   ordinary failure never misattributes blame to the grant;
 - tool wiring: `apply()` registers both tools on darwin and **registers
-  nothing** on a non-darwin host;
+  nothing** on a non-darwin host; that a tool-name collision leaves the host
+  running and the other tool registered; and that the collision is then
+  *discoverable* — `screen_permission` reports it, and its render drops the
+  clean-bill-of-health sentence rather than claiming a working screenshot tool
+  the plugin's own report contradicts;
 - the bundle patch carries the platform gate, and the package stays
   installable (`dsh.bundle` present, every required file in `files`).
 
@@ -129,7 +133,25 @@ directory and the code did something else; the code now matches the promise,
 because a directory a caller merely pointed one capture at is not a directory
 retention should be walking.
 
-## 4. What was reasoned about but not executed
+## 4. What the plugin's logs are worth — a canary
+
+Checked because a comment in the code asserted it, and the assertion was wrong.
+
+A deliberately failing registration has to be reported somewhere, and the
+obvious answer is the logger. To find out whether that answer is real rather
+than assumed, a canary was written into `apply()` — one line each at `info`,
+`warn` and `error` — and a profile containing this plugin was booted. **None of
+the three appeared.** `dsh web` prints its banner and nothing else, and the
+harness keeps no log file in the home directory.
+
+So catching a failed registration is not enough on its own: the catch would
+have turned "your harness will not start" into a plugin that silently does less
+than it says — the failure mode this project has otherwise been careful to
+avoid. Failures are therefore also recorded and reported through
+`screen_permission`, which is the tool an agent reaches for when the screen
+misbehaves. The canary was removed after the run.
+
+## 5. What was reasoned about but not executed
 
 - **Multi-display behaviour.** The machine this was developed on has one
   display, so no multi-display case was ever run. What was done instead:

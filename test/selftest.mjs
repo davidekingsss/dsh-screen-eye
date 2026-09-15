@@ -657,13 +657,29 @@ await test('the package stays installable and publishable', async () => {
 process.stdout.write('\nplugin wiring\n');
 
 /** A context that records tool registration and runs injected callbacks at once. */
-function wiringCtx() {
+function wiringCtx(options = {}) {
   const registered = [];
+  const definitions = [];
+  const errors = [];
+  const logger = Object.assign(() => logger, {
+    info() {},
+    warn() {},
+    error(format, ...args) {
+      // Substitute like the real logger does, so a case asserts the message a
+      // user would read rather than the raw format string.
+      let index = 0;
+      errors.push(String(format).replace(/%s/gu, () => String(args[index++])));
+    },
+  });
   const ctx = {
-    logger: () => ({ info() {}, warn() {} }),
+    logger: () => logger,
     tools: {
       register(definition) {
+        if (options.collisions?.has(definition.name) === true) {
+          throw new Error(`name "${definition.name}" is already registered`);
+        }
         registered.push(definition.name);
+        definitions.push(definition);
         return () => {};
       },
     },
@@ -672,13 +688,68 @@ function wiringCtx() {
       callback(ctx);
     },
   };
-  return { ctx, registered };
+  return { ctx, registered, definitions, errors };
 }
 
 await test('apply() registers both tools on macOS', () => {
   const { ctx, registered } = wiringCtx();
   apply(ctx, {});
   assert.deepEqual(registered.sort(), ['screen_permission', 'screenshot']);
+});
+
+await test('a tool-name collision is reported without taking the host down', () => {
+  // register() rejects duplicates, and a thrown apply aborts the whole boot:
+  // "you have two screenshot plugins" must not become "your harness will not
+  // start". The unaffected tool still registers.
+  const { ctx, registered, errors } = wiringCtx({ collisions: new Set(['screen_permission']) });
+  assert.doesNotThrow(() => apply(ctx, {}));
+  assert.deepEqual(registered, ['screenshot'], 'the unaffected tool must still register');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /screen_permission/u);
+  assert.match(errors[0], /already registered/u);
+});
+
+await test('a failed registration is discoverable through screen_permission', async () => {
+  // Logging is not a channel here: the harness does not echo plugin log output
+  // and keeps no log file. So the failure has to reach the agent some other
+  // way, or a plugin doing less than it claims is indistinguishable from one
+  // doing everything. screen_permission is the tool an agent reaches for when
+  // the screen misbehaves, so it carries the report.
+  const { ctx, definitions } = wiringCtx({ collisions: new Set(['screenshot']) });
+  apply(ctx, {});
+  const permission = definitions.find((definition) => definition.name === 'screen_permission');
+  assert.ok(permission, 'the permission tool must still mount when the other one cannot');
+
+  const value = await permission.execute({}, stubExec());
+  assert.ok(Array.isArray(value.issues), 'the failed tool must be reported');
+  assert.match(value.issues[0], /screenshot tool is unavailable/u);
+  assert.match(value.issues[0], /already registered/u);
+
+  const [block] = permission.output.render({}, value);
+  assert.match(block.text, /did not mount/u);
+  // The clean-bill-of-health sentence must be gone: the permission may be
+  // fine while the plugin is still not working, and saying otherwise would be
+  // the plugin's own claim contradicted by its own report.
+  assert.doesNotMatch(block.text, /the screenshot tool will work/u);
+});
+
+await test('a healthy mount reports no issues at all', async () => {
+  const { ctx, definitions } = wiringCtx();
+  apply(ctx, {});
+  const permission = definitions.find((definition) => definition.name === 'screen_permission');
+  const value = await permission.execute({}, stubExec());
+  assert.equal(value.issues, undefined, 'no issues key when there is nothing to report');
+  const [block] = permission.output.render({}, value);
+  assert.doesNotMatch(block.text, /mount_issues/u);
+});
+
+await test('apply() survives both tool names colliding', () => {
+  const { ctx, registered, errors } = wiringCtx({
+    collisions: new Set(['screen_permission', 'screenshot']),
+  });
+  assert.doesNotThrow(() => apply(ctx, {}));
+  assert.deepEqual(registered, []);
+  assert.equal(errors.length, 2);
 });
 
 await test('apply() registers nothing on a non-macOS host', () => {

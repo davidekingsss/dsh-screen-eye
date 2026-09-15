@@ -71,6 +71,40 @@ export const Config = z.object({
 });
 
 /**
+ * Register one tool without letting a failure escape `apply`.
+ *
+ * A registration can fail for reasons this plugin does not control — the most
+ * likely being that another installed plugin already claimed the name, since
+ * the tool registry rejects duplicates. Letting that throw would abort the
+ * whole boot: a thrown `apply` takes the entire harness down with it, which
+ * turns "you have two screenshot plugins" into "your harness will not start".
+ * A plugin's failure must stay the plugin's failure.
+ *
+ * Logging alone would not be enough. This was verified rather than assumed: a
+ * canary written at `error` level does not appear anywhere in `dsh web`'s
+ * output, and the harness keeps no log file by default. A plugin that failed
+ * to register would therefore look exactly like a plugin that is working, so
+ * the failure is also recorded in `issues`, which `screen_permission` reports —
+ * that being the tool an agent reaches for when the screen misbehaves.
+ *
+ * @param ctx - the registration scope.
+ * @param log - a named logger.
+ * @param definition - the tool definition to register.
+ * @param what - the tool name, for the message.
+ * @param issues - collects failures for `screen_permission` to report.
+ */
+function registerTool(ctx, log, definition, what, issues) {
+  try {
+    ctx.tools.register(definition);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = `the ${what} tool is unavailable: ${detail}`;
+    issues.push(message);
+    log.error('%s — another plugin may already register that name.', message);
+  }
+}
+
+/**
  * Mount the plugin.
  *
  * The `cordis.patch.yml` entry already carries a platform gate, which stops
@@ -90,13 +124,17 @@ export function apply(ctx, config = {}) {
   }
 
   const settings = resolveSettings(config);
-  ctx.tools.register(screenPermissionTool(settings));
+  // Registration order matters for reporting: the permission tool is built
+  // first so that a later failure has somewhere to be reported from, and it
+  // reads this array at call time rather than at build time.
+  const issues = [];
+  registerTool(ctx, log, screenPermissionTool(settings, issues), 'screen_permission', issues);
 
   // `screenshot` exists only while a durable attachment store is mounted:
   // without one there is nowhere to commit the image, and handing back a bare
   // path would defeat the point of the tool.
   ctx.inject(['attachments'], (imageCtx) => {
-    imageCtx.tools.register(screenshotTool(imageCtx, settings, log));
+    registerTool(imageCtx, log, screenshotTool(imageCtx, settings, log), 'screenshot', issues);
   });
 
   log.info('mounted: captures land in %s', settings.outputDir);

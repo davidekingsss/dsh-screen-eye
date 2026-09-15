@@ -41,7 +41,7 @@ description:
 #
 # Checklist from the contributing guide:
 #   [x] package.json declares dsh.bundle with a cordis.patch.yml
-#   [x] real, working code (30 self-test cases, run with `node test/selftest.mjs`)
+#   [x] real, working code (52 self-test cases, run with `node test/selftest.mjs`)
 #   [x] `dsh-plugin` topic added to the repository
 #   [x] description states what the plugin does, no superlatives
 #   [x] category matches what the plugin does
@@ -49,9 +49,41 @@ description:
 #       finished early, and it is checked by CI, not by argument. The PR is
 #       opened once the repository passes the threshold.
 #
-# The pull request body should carry nothing but the one entry file: the
-# generated READMEs are rebuilt on main after merge, and touching them is the
-# usual way a submission ends up conflicting with an unrelated one.
+# ---------------------------------------------------------------------------
+# "Is it already covered?" — the review question this entry has to answer
+#
+# The list already carries screenshot plugins, so the honest question is what
+# this one adds. Checked against the entries themselves rather than assumed:
+#
+#   paicat1/dsh-screenshot            Windows only; the README states the
+#                                     platform and that it calls PowerShell's
+#                                     System.Drawing.CopyFromScreen. Its
+#                                     agent-facing tool is the closest in
+#                                     spirit to this one, on the other platform.
+#   deepseekbluefish/dsh-screenshot-  Windows only, and driven from the
+#   plugin                            composer UI rather than by the agent.
+#   TaurusWood/dsh-plugin-appshot     macOS and Windows, but a global hotkey
+#   WongYuYe/dsh-appshots             for a human: the capture lands in the
+#                                     composer for the user to send. Neither
+#                                     registers a tool the agent can call.
+#   Max-Null/dsh-capture              Driven by a hotkey or a composer button;
+#                                     in the browser it uses getDisplayMedia,
+#                                     which is a per-use consent, not a grant.
+#   Junkrat9527/dsh-desktop-          macOS and agent-callable, but a whole
+#   automation                        desktop-control suite, and as published
+#                                     the npm package cannot work: it reads
+#                                     ~/.agents/skills/desktop-automation/
+#                                     scripts/bin/desktop-control-server, and
+#                                     neither that binary nor the plist it also
+#                                     needs is in the tarball or fetched by a
+#                                     postinstall step.
+#
+# What none of them do is the thing this plugin exists for: an agent-callable
+# tool on macOS that returns the image itself in the same call, whose
+# permission story is handled rather than assumed. The macOS entries either
+# need a human at a hotkey or ship a native helper; the agent-callable ones are
+# on Windows. This one is a single tool plus the onboarding for the grant that
+# tool needs, with no compiled artefact in between.
 #
 # ---------------------------------------------------------------------------
 # Local rehearsal of the pull-request checks
