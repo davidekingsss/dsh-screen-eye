@@ -91,10 +91,36 @@ Windows users better than the tested ones already available.
 
 ## If you want to add it
 
-The work is self-contained, which is the point of the registry seam:
+**It is not as self-contained as an earlier revision of this page claimed.**
+The registry seam covers the capture engine and nothing else. Two other
+concerns are macOS modules wired straight into the tool layer, and a Windows
+engine would collide with both:
+
+- `lib/displays.mjs` hardcodes `/usr/sbin/system_profiler`, and both the
+  module and its pure ordering function are named after that tool. The ordering
+  logic is platform-neutral; where the inventory comes from is not.
+- `lib/permission.mjs` is TCC end to end — the denial string, the System
+  Settings deep link, the grant target, the onboarding text. None of those
+  concepts exists on Windows, where a process captures the screen without
+  asking anyone.
+- `lib/screenshot-tool.mjs` imports `listDisplays` and the permission module's
+  `DENIED` and `guidance` directly, so the macOS shapes reach the tool's error
+  path.
+
+So the port is mechanical only after those are seamed too, which is a design
+decision rather than typing. Two shapes are possible — a platform module
+providing capture, display enumeration and an optional permission gate, or
+per-platform modules resolved at the few call sites — and they differ in what
+a platform without a permission gate has to implement. That choice belongs to
+whoever does the port, with a Windows machine to check it against.
+
+Given that, the work is:
 
 1. Add a `captureWindows(plan, outputPath, options)` function in
-   `lib/capture.mjs` and register it under `'win32'`.
+   `lib/capture.mjs` and register it under `'win32'`. This part is genuinely
+   just an engine: everything above it — mode validation, burst planning,
+   image blocks, retention, the output contract — is already platform-neutral
+   and already tested without a screen.
 2. Extend `screencaptureArgs`'s counterpart for PowerShell. Keep the mode
    validation in `planCapture` unchanged — it is already platform-neutral.
 3. Nothing to do at runtime: `apply()` asks the engine registry whether the
@@ -105,6 +131,10 @@ The work is self-contained, which is the point of the registry seam:
 4. Add the platform to the description and the README, and record in
    `docs/verification.md` what was run on which machine — including, if it
    applies, the session-isolation hazard above.
+
+None of this can be checked from macOS. The parts that can be — the seam, the
+mode and burst contract, the content blocks, retention — are covered by cases
+that run anywhere, and those are what a port would be built on.
 
 The self-test is written to skip its capture cases on a platform with no
 engine, so it will keep passing while the engine is added.
