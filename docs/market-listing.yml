@@ -42,7 +42,45 @@ description:
 # Checklist from the contributing guide:
 #   [x] package.json declares dsh.bundle with a cordis.patch.yml
 #   [x] real, working code (30 self-test cases, run with `node test/selftest.mjs`)
-#   [x] repository at least 1 day old before the PR is opened
 #   [x] `dsh-plugin` topic added to the repository
 #   [x] description states what the plugin does, no superlatives
 #   [x] category matches what the plugin does
+#   [ ] repository at least 1 day old — this is the only item that cannot be
+#       finished early, and it is checked by CI, not by argument. The PR is
+#       opened once the repository passes the threshold.
+#
+# The pull request body should carry nothing but the one entry file: the
+# generated READMEs are rebuilt on main after merge, and touching them is the
+# usual way a submission ends up conflicting with an unrelated one.
+#
+# ---------------------------------------------------------------------------
+# Local rehearsal of the pull-request checks
+#
+# The checks below were run against a clone of awesome-dsh-plugin with this
+# entry committed, so the submission is known to be well-formed before it is
+# sent. Each line names the step from .github/workflows/pr-check.yml.
+#
+#   entry filename and depth   data/plugins/<owner>__<repo>.yml, exactly one
+#                              level deep — readEntries() globs
+#                              data/plugins/*.yml and is not recursive, so a
+#                              file anywhere else is silently never read.
+#                              -> no stray or misplaced files found.
+#   READMEs match data/plugins committed as yml only, so the generator runs in
+#                              the runner and nothing has to match.
+#                              -> `node scripts/generate-readme.mjs` regenerated
+#                                 both locales with the entry at README.md:2323
+#                                 and README.zh.md:2323, under `vision`.
+#   awesome-lint               -> exit 0, 79 warnings, all of them pre-existing
+#                                 and none pointing at this entry's line.
+#   added-date regression      -> `node --test scripts/added-dates.test.mjs`
+#                                 3 passed, 0 failed.
+#   build (locale parity,       -> `SKIP_PUBLISH_CHECKS=1 node scripts/build-site.mjs`
+#   date derivation)              "site built: 3723 rows x 2 locales + sitemap
+#                                 + count badge".
+#
+# One caveat found while rehearsing, worth knowing but not worth fixing: the
+# build derives each entry's added-date from git history, so it fails on an
+# uncommitted or shallow checkout with "no added-date derivable". That is an
+# artefact of rehearsing locally, not a property of the submission — the CI
+# job checks out with fetch-depth: 0 and the entry is committed.
+
