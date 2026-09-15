@@ -30,6 +30,7 @@ import {
   screencaptureArgs,
 } from '../lib/capture.mjs';
 import { run } from '../lib/exec.mjs';
+import { displaysFromProfiler } from '../lib/displays.mjs';
 import { formatBurstOutput, imageContent } from '../lib/image.mjs';
 import { pngDimensions } from '../lib/png.mjs';
 import {
@@ -47,14 +48,24 @@ import { resolveOutputPath, resolveSettings } from '../lib/settings.mjs';
 
 let passed = 0;
 const failures = [];
+const skipped = [];
+
+/** Thrown by a case's `skip` callback; never a failure. */
+const SKIPPED = Symbol('skipped');
 
 /** Run one named case, recording rather than throwing so the suite reports all. */
 async function test(name, body) {
   try {
-    await body();
+    await body((reason) => {
+      skipped.push({ name, reason });
+      const marker = 'skip';
+      process.stdout.write(`  ${marker} ${name} — ${reason}\n`);
+      throw SKIPPED;
+    });
     passed += 1;
     process.stdout.write(`  ok   ${name}\n`);
   } catch (error) {
+    if (error === SKIPPED) return;
     failures.push({ name, error });
     process.stdout.write(`  FAIL ${name}\n         ${error.message}\n`);
   }
@@ -476,6 +487,61 @@ await test('a single capture keeps its original one-image shape', () => {
 
 process.stdout.write('\ndisplays\n');
 
+await test('orders displays the way -D numbers them', () => {
+  // The payload is the one a real machine produced: a 4K monitor marked main
+  // and an iPad in Sidecar. The ordering is the contract this mode exists for,
+  // and it is checked here rather than only against a live inventory because
+  // the CI machine reports no displays at all.
+  const ordered = displaysFromProfiler({
+    SPDisplaysDataType: [{
+      spdisplays_ndrvs: [
+        { _name: 'P27A6VP', _spdisplays_pixels: '3840 x 2160', spdisplays_main: 'spdisplays_yes', spdisplays_online: 'spdisplays_yes' },
+        { _name: 'Sidecar Display', _spdisplays_pixels: '2388 x 1668', spdisplays_mirror: 'spdisplays_off' },
+      ],
+    }],
+  });
+  assert.deepEqual(ordered, [
+    { index: 1, name: 'P27A6VP', width: 3840, height: 2160, main: true },
+    { index: 2, name: 'Sidecar Display', width: 2388, height: 1668, main: false },
+  ]);
+});
+
+await test('puts the main display first even when the system lists it later', () => {
+  const ordered = displaysFromProfiler({
+    SPDisplaysDataType: [{
+      spdisplays_ndrvs: [
+        { _name: 'Secondary', _spdisplays_pixels: '1920 x 1080' },
+        { _name: 'Primary', _spdisplays_pixels: '2560 x 1440', spdisplays_main: 'spdisplays_yes' },
+      ],
+    }],
+  });
+  assert.deepEqual(ordered.map((display) => display.name), ['Primary', 'Secondary']);
+  assert.deepEqual(ordered.map((display) => display.index), [1, 2]);
+});
+
+await test('survives a display with no reported size or name', () => {
+  // A missing size must not become a zero-sized display, and a missing
+  // spdisplays_online must not be read as offline: Sidecar displays omit it,
+  // and treating it as offline would hide the second screen on exactly the
+  // setup this mode exists to describe.
+  const ordered = displaysFromProfiler({
+    SPDisplaysDataType: [{ spdisplays_ndrvs: [{ spdisplays_main: 'spdisplays_yes' }] }],
+  });
+  assert.equal(ordered.length, 1);
+  assert.equal(ordered[0].name, 'unknown display');
+  assert.equal(ordered[0].width, undefined);
+  assert.equal(ordered[0].main, true);
+});
+
+await test('treats an empty inventory as a failure, not as no screens', () => {
+  // A Mac always has at least one display, so an empty list means the
+  // inventory could not be read — saying "no displays" would be a claim about
+  // the machine rather than about the reading.
+  for (const payload of [{}, { SPDisplaysDataType: [] }, { SPDisplaysDataType: [{ spdisplays_ndrvs: [] }] }, undefined]) {
+    assert.throws(() => displaysFromProfiler(payload), /listed no displays/u, JSON.stringify(payload));
+  }
+});
+
 await test('the inventory mode refuses capture arguments', () => {
   // It reports and returns; silently ignoring a region or a frame count would
   // let a caller believe it had captured something.
@@ -888,12 +954,24 @@ if (!probe.authorized) {
     assert.equal(blocks.length, 4, 'one text envelope and three images');
   });
 
-  await test('lists the connected displays in the order -D numbers them', async () => {
+  await test('lists the connected displays in the order -D numbers them', async (skip) => {
     // Deliberately built with the default settings and an execution context
     // carrying no agent at all: the inventory returns no image, so it must not
     // be gated on the calling route being able to see one.
     const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
-    const value = await tool.execute({ mode: 'displays' }, stubExec());
+    let value;
+    try {
+      value = await tool.execute({ mode: 'displays' }, stubExec());
+    } catch (error) {
+      // A headless CI runner reports no displays at all, which is a fact about
+      // the environment and not about the ordering under test — the pure cases
+      // above already cover that.
+      if (/listed no displays/u.test(error.message)) {
+        skip(`this machine reports no display inventory (${error.message})`);
+        return;
+      }
+      throw error;
+    }
 
     assert.equal(value.mode, 'displays');
     assert.ok(Array.isArray(value.displays) && value.displays.length >= 1);
@@ -1067,5 +1145,6 @@ await test('apply() registers nothing on a non-macOS host', () => {
 // case cannot leave PNGs of the user's screen in the temporary directory.
 await rm(liveDir, { recursive: true, force: true });
 
-process.stdout.write(`\n${passed} passed, ${failures.length} failed\n`);
+process.stdout.write(`\n${passed} passed, ${failures.length} failed`);
+process.stdout.write(skipped.length === 0 ? '\n' : `, ${skipped.length} skipped\n`);
 if (failures.length > 0) process.exitCode = 1;

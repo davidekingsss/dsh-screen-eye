@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-71 cases, all passing. They run without a harness: the logic modules are
+75 cases, all passing. They run without a harness: the logic modules are
 imported directly and the tool definitions are exercised through a stubbed
 context.
 
@@ -37,6 +37,14 @@ What they cover:
   are applied on different paths and a silent drift would make behaviour
   depend on how the plugin loaded;
 - the image content blocks, including the downscale multiplier;
+- display ordering as a pure function, on the exact payload a real machine
+  produced: main first even when the system lists it later, a Sidecar entry
+  that omits `spdisplays_online` staying listed rather than being read as
+  offline, a display with no name or size reported without inventing either,
+  and an empty inventory treated as a failed reading rather than as a machine
+  with no screens. The live enumeration is asserted too, and skips itself when
+  the environment reports no inventory — which the CI runner does, and that
+  is why the pure cases exist;
 - bursts: the frame-count bounds, that an interactive mode cannot be repeated
   unattended, the interval default and validation, and — against the real
   screen — that three frames come back in one call as three committed images
