@@ -231,13 +231,20 @@ away; [`docs/windows.md`](docs/windows.md) has the measurements.
   reports as a successful capture of a black screen. The engine checks the
   window station and session first and refuses by name, and a frame that is
   black everywhere is returned *with a note* saying what that usually means.
-- **Bursts.** A Windows capture costs about 380ms in steady state, almost
-  regardless of area, because the engine pays a PowerShell start per call (148ms
-  of that with nothing to do at all); the C# shim it needs is compiled once per
-  machine and loaded from a cache after that, which is worth 177ms a call. Taking
-  a six-frame burst as six calls would sample a 400ms animation over two and a
-  half seconds, so Windows takes the whole burst in one engine call and the
+- **Bursts.** A Windows capture costs about 380ms cold, almost regardless of
+  area, because the engine pays a PowerShell start per call (148ms of that with
+  nothing to do at all). It is started once and kept resident instead: the C#
+  shim is compiled once per machine, and a warm capture costs **16-22ms**. Taking
+  a six-frame burst as six cold calls would sample a 400ms animation over two and
+  a half seconds, so Windows takes the whole burst in one engine call and the
   interval in the plan becomes reachable.
+- **Animations that run once.** A component transition plays once, and a model
+  cannot issue its call at the moment the user clicks — measured, a burst issued
+  as a 300ms transition begins gets **zero** usable frames on either platform.
+  `wait_for_change: true` is the answer: "I am watching this rectangle; take the
+  frames from the moment it moves." On a known 300ms transition the frames began
+  **103ms** after it started and **4-5 of 8** landed inside it. macOS has the
+  same option with a slower check, because it has no resident helper to ask.
 - **Two screens.** Displays are listed main-first with their origins, so a
   `region` on a second screen — including one to the left of the main display,
   where x is negative — addresses the right pixels. Verified on a 3840x2160 main
