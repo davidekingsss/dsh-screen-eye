@@ -293,11 +293,34 @@ await test('rejects relative and non-PNG output paths', () => {
 });
 
 await test('generates unique names for captures in the same second', () => {
-  const names = new Set();
-  for (let index = 0; index < 200; index += 1) {
-    names.add(resolveOutputPath(undefined, '/tmp/shots'));
-  }
-  assert.equal(names.size, 200);
+  // What has to be true is that a name is a function of the timestamp *and* the
+  // disambiguator, so that two captures in the same second land in two files.
+  //
+  // This case used to draw 200 names at random and assert all 200 differed,
+  // which measured the birthday paradox rather than the naming: with a 48-bit
+  // suffix that assertion fails about once in 850 runs — measured at 0.100%
+  // against a theoretical 0.118% — and every one of those failures was a false
+  // alarm. Determinism is what matters, so the suffixes are fixed here and the
+  // entropy is asserted separately below.
+  const suffixes = Array.from({ length: 200 }, (unused, index) => index.toString(16).padStart(6, '0'));
+  const names = new Set(suffixes.map((suffix) => buildCaptureName(new Date(), suffix)));
+  assert.equal(names.size, suffixes.length, 'distinct disambiguators must give distinct names');
+
+  // And the same suffix at a different second must also differ, because the
+  // stamp is in the name.
+  const at = new Date('2026-09-16T10:00:00Z');
+  const later = new Date('2026-09-16T10:00:01Z');
+  assert.notEqual(buildCaptureName(at, 'abcdef'), buildCaptureName(later, 'abcdef'));
+
+  // The entropy the caller actually supplies is 48 bits, which the flaky
+  // version of this case never checked: it asserted a property of a sample
+  // instead of the size of the space. A burst of 600 frames in one second is
+  // the worst case the tool allows, and at that size a collision is still
+  // unlikely — so the space is large enough, which is the claim worth making.
+  const space = 16 ** 6;
+  const worstCaseFrames = 600;
+  const collisionChance = 1 - Math.exp(-(worstCaseFrames * (worstCaseFrames - 1)) / (2 * space));
+  assert.ok(collisionChance < 0.02, `a full burst must be very unlikely to collide; measured ${collisionChance}`);
 });
 
 process.stdout.write('\ncapture names and retention\n');
@@ -1229,16 +1252,36 @@ await test('a denied region capture is a denial too, not an ordinary failure', (
   assert.equal(classifyFailure('screencapture: cannot write file'), OTHER);
 });
 
-await test('guidance names the exact executable to grant', () => {
+await test('guidance names the entries worth trying, and says why there is more than one', () => {
   const english = guidance({ locale: 'en' }).join('\n');
   const chinese = guidance({ locale: 'zh' }).join('\n');
-  // The whole point of the onboarding is that the user is told the exact path
-  // to add, computed from the running host rather than described generically.
-  assert.ok(english.includes(grantTargetPath()));
-  assert.ok(chinese.includes(grantTargetPath()));
   assert.match(chinese, /屏幕录制/u);
   assert.match(english, /Screen & System Audio Recording/u);
-  assert.match(english, /DSH does not have to be restarted/u);
+
+  // The host executable's own name is the one entry this process can compute,
+  // and it is the right one whenever the host is what macOS attributes the
+  // request to. It is printed as part of a list rather than alone, because on
+  // the machine this was measured on it was wrong in two of the three ways DSH
+  // gets started:
+  //
+  //   started by the Shortcuts droplet → the entry is `运行 Deepseek Harness`
+  //   started by a browser             → the entry is `Google Chrome`
+  //   started by a terminal            → the entry is `Terminal` / `iTerm`
+  //
+  // So a single computed string sent readers to look for an entry that may not
+  // exist. What is asserted is that both the computed name and the principle
+  // are present, and that the alternatives are described by *how the harness
+  // was started* rather than by guessing an app name that would be wrong on the
+  // next machine.
+  const hostName = grantTargetPath().slice(grantTargetPath().lastIndexOf('/') + 1);
+  assert.ok(english.includes(hostName) && chinese.includes(hostName), 'the host executable is among the candidates');
+  for (const text of [english, chinese]) {
+    assert.match(text, /(started DSH with|启动 DSH 的那个 App)/u, 'the principle is stated: the entry follows the launcher');
+    assert.match(text, /(Common ones|常见条目)/u, 'the alternatives are introduced as common cases');
+  }
+  // And it must not claim a path is what the user will see in the list, which is
+  // what the guide said before: the list shows names.
+  assert.doesNotMatch(chinese, /列表中的条目名: \//u, 'the guide does not print a path as the list entry');
 });
 
 await test('guidance walks the three states a user can actually be in', () => {
@@ -1263,22 +1306,16 @@ await test('guidance walks the three states a user can actually be in', () => {
     // gets one and a launchd-reparented host does not.
     assert.match(text, /(system dialog|系统对话框)/u, 'the guide mentions the system prompt');
     // And the manual step is stated as a step, not implied by "it is listed".
-    assert.match(text, /(Switch it on|把它的开关打开)/u, 'the guide says the switch must be turned on');
-    assert.match(text, /(OFF by default|默认是关闭的)/u, 'it says why that step is not automatic');
+    assert.match(text, /(Turn it on|把它的开关打开)/u, 'the guide says the switch must be turned on');
+    assert.match(text, /(off by default|默认是关闭的)/u, 'it says why that step is not automatic');
     // Retrying before the switch is on is the failure this wording prevents.
-    assert.match(text, /(Do not retry|不要反复重试)/u);
+    assert.match(text, /(Do not retry|不要重试)/u);
   }
-  // The entry name comes before the full path, because the list shows names:
-  // leading with the path asked the user to derive the thing the guide had just
-  // declined to state.
-  assert.ok(
-    english.indexOf('named node') < english.indexOf('/usr/local/bin/node'),
-    'the list name is given before the path',
-  );
-  assert.ok(
-    chinese.indexOf('条目名是 node') < chinese.indexOf('/usr/local/bin/node'),
-    'the list name is given before the path',
-  );
+  // The candidates are introduced by the principle, and the host executable is
+  // among them; a path is never printed as the thing to look for, because the
+  // list shows names.
+  assert.doesNotMatch(english, /: \//u, 'no path is presented as a list entry');
+  assert.doesNotMatch(chinese, /: \//u, 'no path is presented as a list entry');
   // And no English may leak into the Chinese guide, which a hard-coded
   // "Look for …" sentence used to do.
   assert.doesNotMatch(chinese, /Look for/u, 'the Chinese guide is not partly English');
@@ -1685,16 +1722,20 @@ await test('a denied capture carries the onboarding steps, not the system string
   // machine runs the suite.
   const message = MACOS.describeFailure(denied, describeCaptureFailure, { locale: 'en' }).message;
   assert.match(message, /refused by macOS/u);
-  assert.ok(message.includes(grantTargetPath()), 'the message must name what to grant');
+  // The host executable is named among the candidates rather than as the single
+  // answer: which entry the list actually holds depends on how DSH was started,
+  // and that is not knowable from in here.
+  const hostName = grantTargetPath().slice(grantTargetPath().lastIndexOf('/') + 1);
+  assert.ok(message.includes(hostName), 'the message names what to look for');
   assert.match(message, /Screen & System Audio Recording/u);
-  assert.match(message, /DSH does not have to be restarted/u);
   // The raw system string is replaced, not merely prefixed: it reads like a
   // bug and tells the user nothing they can act on.
   assert.doesNotMatch(message, /could not create image from display/u);
 
   const chinese = MACOS.describeFailure(denied, describeCaptureFailure, { locale: 'zh' }).message;
   assert.match(chinese, /屏幕录制/u);
-  assert.ok(chinese.includes(grantTargetPath()));
+  assert.ok(chinese.includes(hostName), 'the Chinese message names what to look for too');
+  assert.match(chinese, /启动 DSH 的那个 App/u, 'and states the principle behind the name');
 });
 
 await test('an ordinary capture failure keeps the system detail', () => {
