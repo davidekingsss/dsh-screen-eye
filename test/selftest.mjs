@@ -1723,6 +1723,32 @@ async function liveCaptureAvailable() {
   }
 }
 
+/**
+ * The display inventory, or `null` when this machine has none to report.
+ *
+ * A headless CI runner is the case this exists for. `listDisplays` refuses an
+ * empty inventory — the mode's whole answer would be "nothing" — so a live case
+ * that needs a panel to say anything has to tell that refusal apart from a real
+ * failure; asserting a panel exists would fail on the runner for a reason that
+ * is a fact about the runner. macOS's job is the one that meets it: the runner
+ * reports no displays, while a developer's Mac reports several and never sees
+ * this path.
+ *
+ * @param skip - the calling case's own skip function.
+ * @returns the displays, or `null` after skipping the case.
+ */
+async function inventoryOrSkip(skip) {
+  try {
+    return await platformFor().listDisplays({});
+  } catch (error) {
+    if (/listed no displays/u.test(error.message)) {
+      skip(`this machine reports no display inventory (${error.message})`);
+      return null;
+    }
+    throw error;
+  }
+}
+
 const live = await liveCaptureAvailable();
 if (!live.ok) {
   process.stdout.write(`  skip live capture — ${live.reason}\n`);
@@ -1807,7 +1833,8 @@ if (!live.ok) {
     // inventory reports native pixels; a capture that comes back at exactly
     // half is the failure, which is why the sizes are compared rather than a
     // "looks right" threshold.
-    const displays = await platformFor().listDisplays({});
+    const displays = await inventoryOrSkip(skip);
+    if (displays === null) return;
     assert.ok(displays.length > 0, 'the inventory must describe the panels it lists');
 
     for (const display of displays) {
@@ -1820,7 +1847,7 @@ if (!live.ok) {
     }
   });
 
-  await test('a region is honoured on every display, in desktop coordinates', async () => {
+  await test('a region is honoured on every display, in desktop coordinates', async (skip) => {
     // A region request is in the desktop's global space and the engine converts
     // it into the display's own before handing it to the framework. On the main
     // display the two spaces coincide, so the conversion can be missing for the
@@ -1834,7 +1861,9 @@ if (!live.ok) {
     // placement of a second screen is not asserted here, because macOS does not
     // report where a display sits and a test that guessed would encode the guess
     // as a fact.
-    const displays = await platformFor().listDisplays({});
+    const displays = await inventoryOrSkip(skip);
+    if (displays === null) return;
+    assert.ok(displays.length > 0, 'the inventory must describe the panels it lists');
     const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
     for (const display of displays) {
       // Aimed at the top-left of each display in turn: for the main one that is
@@ -1845,7 +1874,6 @@ if (!live.ok) {
       const size = pngDimensions(await readFile(value.path));
       assert.ok(size.width >= 200 && size.height >= 150, `display ${display.index}: region came back ${size.width}x${size.height}`);
     }
-    assert.ok(displays.length > 0);
   });
 
   await test('a machine with no helper still captures, through screencapture', async () => {
