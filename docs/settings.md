@@ -93,6 +93,37 @@ rather than this plugin's:
   an artifact that has to be rebuilt and kept in step with a plugin that
   otherwise has no build at all.
 
+## When the section does not appear
+
+Both halves fail in the same silent shape, and this page is where it is noticed:
+a client half whose declared modules do not resolve, or whose cordis services
+the running shell does not provide, is simply never applied. No error is raised,
+no row is drawn, and a comparison of the two declarations cannot tell the two
+causes apart — one is fixed in `package.json`, the other in the module's own
+`inject` list. The answer has to come from the browser, so the plugin keeps one
+line for exactly this question, off by default because a healthy mount is not
+news:
+
+```js
+localStorage.screenEyeDiagnostics = '1'   // then reload the page
+// [screen-eye] loaded · slots=object locale=object settingsScope=object
+localStorage.removeItem('screenEyeDiagnostics')   // take it away again
+```
+
+Read it as two answers:
+
+- **The line is absent.** `apply` never ran. Either the bundle never
+  materialised — every `dsh.client.inject` entry has to be a client module that
+  exists in this deployment, and a phantom id waits forever without a word —
+  or one of the services in the module's own `inject` list is not provided.
+- **The line is there.** The mount is healthy; the three services are the ones
+  the page mounts with. Anything still missing is a rendering problem rather
+  than a wiring one.
+
+It is a browser switch rather than a plugin setting: it lives in the origin's
+local storage and never in `~/.dsh/settings.yaml`, because it reports on the
+mount instead of configuring the capture.
+
 ## Editing the file by hand
 
 The page is a convenience over the document, not a gate in front of it:
