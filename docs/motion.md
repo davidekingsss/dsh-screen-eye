@@ -245,6 +245,45 @@ The wait gives up rather than guessing. If nothing moves for `wait_timeout_ms`
 (ten seconds by default) the call **fails and says so**, because a burst of a
 screen that never changed is not a weaker answer, it is a wrong one.
 
+### Where to watch, which is the whole strategy
+
+The waiting is only as good as the rectangle it waits on, and that rectangle is
+the caller's to choose — it is the same `region` the frames are taken from. The
+model is told this in the parameter description, because getting it wrong fails
+in both directions and neither failure looks like a failure:
+
+- **Watch a component, not the screen.** The engine compares a few thousand
+  sampled points, so on a component-sized region each point covers a few pixels
+  and a moving element changes hundreds of them. On a 4K screen the same few
+  thousand points sit about 45px apart: a small animation changes perhaps a
+  dozen of them — under the threshold, so it is *not* seen — while a clock, a
+  notification or another window changes more than enough to start the burst.
+  Whole-screen waiting is therefore worse than useless, because it misses what
+  was asked for and fires on what was not.
+- **Aim it by looking first.** The workflow that works is: capture once, find
+  the rectangle the animation lives in, then issue the burst on that rectangle
+  with `wait_for_change`. A region is in the same coordinates as the full
+  capture — verified by comparing a region against the matching crop of a 4K
+  capture, pixel for pixel — so the rectangle can be read off the first image.
+
+What the wait deliberately does **not** do:
+
+- **It does not separate the watched rectangle from the captured one.** One
+  rectangle serves both: two would mean two coordinate systems inside one call
+  and a second thing to get wrong.
+- **It cannot see a transition shorter than about 100ms.** A change has to be
+  confirmed twice before the burst starts — 103ms measured end to end — so a
+  transition that begins and ends inside that window is over before the first
+  frame. That is the price of not firing on a cursor blink, and it is why the
+  parameter description tells the model to capture directly and compare frames
+  for anything that short.
+- **It blocks the call while it waits.** A tool call has one result, so the
+  watching happens inside it: nothing can be pushed back later, and the timeout
+  has to cover however long the user takes to trigger the animation.
+- **It fires on the first change it believes in** — the first, not the most
+  interesting. If something else moves inside the rectangle first, that is what
+  gets captured.
+
 ## Three numbers, any two of which settle the third
 
 A burst is described by how many frames, how far apart, and over how long. The
