@@ -893,9 +893,14 @@ Two defects this run found, both fixed:
   responsible parent for TCC purposes — is verified from a terminal-spawned
   parent, which is how this harness runs; a launchd-started one is the case where
   that attribution may differ, and it is the one worth checking next.
-- **Multi-display and Retina on macOS.** The development machine has one display
-  at 1x. Negative origins, a second screen and mixed scaling are reasoned about
-  and asserted as pure functions, and were measured on Windows, but not here.
+- **A differently arranged second screen on macOS.** An iPad was attached as a
+  Sidecar display and the multi-display path was exercised for real, which found
+  two defects — a scaled display captured at its point size, and a region on a
+  second screen refused outright — both now fixed and measured
+  (`docs/macos-findings.md`, step 7). What remains unverified is any arrangement
+  other than the one measured: the iPad sat on the left, aligned with the main
+  display's top edge, and macOS does not report where a display sits, so a screen
+  placed below, above, or at a vertical offset is untested.
 - **Attachment-store rejection.** `saveImage` can refuse an image that exceeds
   the deployment's limits (8192 px per side, 64 megapixels, 20 MB by default).
   A single display cannot reach those — the default capture is one display

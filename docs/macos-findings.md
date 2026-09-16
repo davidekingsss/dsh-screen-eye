@@ -157,10 +157,110 @@ measurement.
 
 ## Step 7 — multi-display and Retina
 
-Not applicable on this machine: one display, no scaling. Reported rather than
-implied away. What *was* measured is that the display's own reported size
-(3840x2160) matches the capture size exactly, and that `mode: "display", display: 1`
-and `mode: "screen"` agree.
+The first pass of this document said this step was "not applicable on this
+machine: one display, no scaling", and recorded it rather than implying it away.
+An iPad was then attached as a Sidecar display, and the step turned out to be the
+most productive one in the run: **it found two defects, one of them silent, and
+neither of them could exist on the machine the plugin was written on.**
+
+### The two defects
+
+**A scaled display was captured at its point size.** On the 2x Sidecar panel the
+resident helper returned **1194x834** for a **2388x1668** screen — half the
+pixels, with no error and no note, because a smaller picture of the right thing
+still looks like a capture. ScreenCaptureKit speaks in points: `SCDisplay.width`
+is the point width (1194) and `SCStreamConfiguration` wants pixels, so the
+request asked the framework for a downscale.
+
+The fix is one multiplier, and where it comes from is the whole story. The scale
+must be read from the display *mode*: on this machine, in this process,
+`CGDisplayPixelsWide` reports **1194** for the iPad — the point width, not the
+pixel width — so the obvious `CGDisplayPixelsWide / CGDisplayBounds.width` ratio
+evaluates to 1 and leaves the bug exactly where it was. Only
+`CGDisplayCopyDisplayMode(...).pixelWidth / .width` gives 2388/1194 = 2.
+
+**A region on a second display was refused outright.** `SCStreamErrorDomain
+Code=-3812 "the operation could not be completed"`, for every rectangle. The
+cause is a coordinate-space conversion: a request arrives in the desktop's global
+coordinates — the space `region` is documented in — while `sourceRect` is
+measured from the display's own top-left corner, so the display's frame origin
+has to come off. On the main display `frame.min` is (0, 0) and every form of the
+expression behaves identically, so a single-screen machine cannot tell the
+correct one from the broken one. Measured on the Sidecar panel, subtracting both
+components is the **only** form that captures anything:
+
+| rectangle handed to `sourceRect` | result |
+| --- | --- |
+| global, unchanged | refused |
+| subtract `minX` only | refused |
+| subtract `minX` and `minY` | **400x300** |
+
+That subtraction was in the code from the start and is correct. Worth recording
+because the same session first removed it, on the strength of a probe that could
+not distinguish the three forms, and the engine only kept working because the
+main display's origin is zero. The lesson is the one this project keeps
+relearning: a single-screen machine cannot test multi-screen behaviour, and the
+test that "passes" there is not evidence.
+
+Both fixes are measured end to end after the change:
+
+| request | before | after |
+| --- | --- | --- |
+| iPad `display 2` | 1194x834 | **2388x1668** |
+| iPad `region` (desktop coordinates) | refused | **400x300** |
+| main `display 1` | 3840x2160 | 3840x2160 |
+| main `region` | 400x300 | 400x300 |
+
+### What the arrangement actually is
+
+Read off the system rather than assumed, and each figure cross-checked:
+
+- AppKit reports the Sidecar panel at frame `(-748, -834, 1194, 834)` in
+  **points**, `backingScaleFactor` **2**, named `Sidecar Display (AirPlay)`;
+- `system_profiler` independently reports it at **2388x1668** — the same panel in
+  **pixels**, which is what confirms the 2x factor from a second source;
+- ScreenCaptureKit reports it at frame `(-748, 2160, 1194, 834)`. Its origin
+  agrees with AppKit's x, and its y is the main display's height, which is what a
+  space whose origin is the main display's *top-left* would say;
+- `screencapture -R` takes those coordinates and returns the region at the
+  display's own scale: a 100x100 request on the main display comes back 100x100,
+  and on the Sidecar panel 200x200.
+
+`region` is therefore documented correctly and always was: the origin is the
+main display's top-left, a display to the left or above takes negative
+coordinates, and the Space is contiguous. What was missing was the plugin's
+ability to *report* where a display sits.
+
+### Where a screen is, now that the helper knows
+
+`system_profiler` describes a display's size and whether it is the main one, and
+says nothing about position — so the inventory could not say where a second
+screen begins, a region aimed at one could not be reasoned about, and a capture
+of one could not report its own origin. ScreenCaptureKit knows, because it has to
+in order to capture at all, so `listDisplays` now merges the resident helper's
+origins in: **additively**, with the profiler still the source of the list, its
+order and its names, and the origin simply absent on a machine with no helper
+rather than guessed. The model now sees
+
+```
+1. P27A6VP — 3840x2160 at 0,0 (main display)
+2. Sidecar Display — 2388x1668 at -748,2160
+```
+
+and `screenOriginFor` reports an origin for `display` mode as well, so a
+coordinate measured on either screen converts by addition exactly as a region's
+does.
+
+### What is still not verified
+
+The arrangement measured here is one specific one: the iPad on the left, aligned
+with the main display's top edge. macOS does not report where a display sits, so
+the engine's placement of a **differently arranged** second screen — below, above,
+or at a vertical offset — is untested, and it is the case to check next. The
+region cases assert that a region succeeds on every display and reports the
+origin it was given; they do not assert where the engine believes each screen
+begins, because a test that guessed the arrangement would encode the guess as a
+fact.
 
 ## The resident engine
 
