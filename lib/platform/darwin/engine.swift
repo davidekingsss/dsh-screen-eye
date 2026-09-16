@@ -92,6 +92,16 @@ struct Request {
 /// captures the right size of the wrong place, which for a tool whose whole
 /// purpose is reading the screen is the worst possible failure: a plausible
 /// picture of something else.
+///
+/// The subtraction is load-bearing and was verified the hard way on a second
+/// display. A request arrives in the desktop's global coordinates — the space
+/// `region` is documented in — while `sourceRect` is measured from the display's
+/// own top-left corner, so the display's frame origin comes off. On the main
+/// display `frame.min` is (0, 0) and every one of these forms behaves the same,
+/// which is exactly why the mistake survives on a single-screen machine: with a
+/// Sidecar display at frame (-748, 2160), subtracting both is the only form that
+/// captures anything at all, and passing the global rectangle through unchanged
+/// fails with `SCStreamErrorDomain Code=-3812`.
 func sourceRect(_ request: Request, _ display: SCDisplay) -> CGRect? {
     if request.width > 0 && request.height > 0 {
         return CGRect(x: CGFloat(request.x) - display.frame.minX,
@@ -102,17 +112,53 @@ func sourceRect(_ request: Request, _ display: SCDisplay) -> CGRect? {
     return nil
 }
 
+/// How many native pixels this display has per point.
+///
+/// This is the difference between a correct capture and a broken one on any
+/// display that is not 1x, and it was found the hard way — on a 2x Sidecar
+/// display the engine returned **half** the panel's resolution for a full-screen
+/// capture, and refused a region outright with
+/// `SCStreamErrorDomain Code=-3812 "the operation could not be completed"`.
+///
+/// The cause is that ScreenCaptureKit speaks in *points* while the display has
+/// *pixels*: `SCDisplay.width` is the point width (1194 for a 2388-wide iPad)
+/// and wants to be told the output size in pixels. Asking for 1194x834 asked the
+/// framework for a half-resolution copy, and pairing a point-sized `sourceRect`
+/// with it produced the invalid-parameter error on a region.
+///
+/// The scale comes from the display *mode*, and specifically from
+/// `pixelWidth / width`. That pairing was measured, not assumed: on the same
+/// machine and in the same process, `CGDisplayPixelsWide` reports 1194 for the
+/// iPad — the point width, not the pixel width — so the obvious
+/// `CGDisplayPixelsWide / CGDisplayBounds.width` ratio comes out as 1 and leaves
+/// the bug in place. Only the mode returns both numbers, and only their ratio is
+/// right.
+///
+/// @param display - the display to measure.
+/// @returns the scale factor, 1 when it cannot be determined.
+func backingScale(_ display: SCDisplay) -> CGFloat {
+    guard let mode = CGDisplayCopyDisplayMode(display.displayID), mode.width > 0 else { return 1 }
+    let scale = CGFloat(mode.pixelWidth) / CGFloat(mode.width)
+    return scale > 0 ? scale : 1
+}
+
 /// Read a rectangle, or the whole display when no size was asked for.
 func grab(_ request: Request, _ display: SCDisplay) async throws -> CGImage {
     let filter = SCContentFilter(display: display, excludingWindows: [])
     let config = SCStreamConfiguration()
+    let scale = backingScale(display)
     if let rect = sourceRect(request, display) {
+        // The rectangle is in points, in the display's own space, and
+        // `sourceRect` is documented in points too — so only the *output* size
+        // is scaled. That is the asymmetry the error above came from: the
+        // request was consistent, the answer was not.
         config.sourceRect = rect
-        config.width = request.width
-        config.height = request.height
+        config.width = Int(CGFloat(request.width) * scale)
+        config.height = Int(CGFloat(request.height) * scale)
     } else {
-        config.width = display.width
-        config.height = display.height
+        // "The whole display" means its native resolution, not its point size.
+        config.width = Int(CGFloat(display.width) * scale)
+        config.height = Int(CGFloat(display.height) * scale)
     }
     config.showsCursor = request.cursor
     config.captureResolution = .best

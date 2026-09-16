@@ -1528,6 +1528,29 @@ await test('the engine source obeys the protocol the host parses', async () => {
   // `CGDisplayCreateImage` is obsoleted in macOS 15 and would not compile
   // against a current SDK; reaching for it again is the mistake this prevents.
   assert.doesNotMatch(source, /CGDisplayCreateImage/u, 'the obsoleted capture API is not coming back');
+
+  // The scale factor, which is the difference between a correct capture and a
+  // broken one on every display that is not 1x. `SCDisplay.width` is in points
+  // and `SCStreamConfiguration` wants pixels, so an unscaled request asks for a
+  // half-resolution copy — measured on a 2x Sidecar display, 1194x834 instead of
+  // 2388x1668 — and pairing that with a region made the framework refuse the
+  // call outright with `SCStreamErrorDomain Code=-3812`.
+  //
+  // Two specifics are asserted rather than the general idea, because both were
+  // arrived at by measurement and both have an obvious-looking wrong answer:
+  // the scale comes from the display *mode* (on this machine `CGDisplayPixelsWide`
+  // reports the point width for the iPad, so the obvious ratio is 1 and leaves
+  // the bug in place), and the source rectangle subtracts the display's frame
+  // origin (the main display's is zero, which is why a single-screen machine
+  // cannot tell the difference).
+  assert.match(source, /func backingScale/u, 'there is one place that decides the scale');
+  assert.match(source, /mode\.pixelWidth/u, 'the scale comes from the display mode, which is the only source that reports both numbers');
+  assert.doesNotMatch(source, /CGDisplayPixelsWide\(display\.displayID\)\s*\)\s*\/\s*CGDisplayBounds/u,
+    'the obvious pixels-over-bounds ratio reports 1 on this machine and is not used');
+  assert.match(source, /config\.width = Int\(CGFloat\(display\.width\) \* scale\)/u, 'a whole display is captured at its native resolution');
+  assert.match(source, /config\.width = Int\(CGFloat\(request\.width\) \* scale\)/u, 'a region output is scaled too');
+  assert.match(source, /request\.x\) - display\.frame\.minX/u, 'the region is converted from desktop coordinates to the display\'s own');
+  assert.match(source, /request\.y\) - display\.frame\.minY/u);
 });
 
 await test('the engine binary is cached by source, and a cold engine costs nothing', async (skip) => {
@@ -1730,12 +1753,79 @@ if (!live.ok) {
     assert.deepEqual(screen.screenOrigin, { x: 0, y: 0 }, 'the main display begins at the origin of region coordinates');
     assert.match(tool.output.render({}, screen)[0].text, /<screen-origin x="0" y="0">/u);
 
-    // `display` reports none: macOS lists a display's size but not where it
-    // sits, and a guessed origin would be worse than an absent one — it would
-    // make every coordinate derived from the picture look authoritative.
+    // `display` reports an origin when the platform's inventory knows where the
+    // screen sits. macOS's `system_profiler` does not report one, but its
+    // resident helper does, so on a machine with the helper this is present and
+    // names where that display begins — which is what makes a coordinate read
+    // off a second screen's picture convertible at all.
     const display = await tool.execute({ mode: 'display', display: 1 }, stubExec());
-    assert.equal(display.screenOrigin, undefined, 'an unknown origin is omitted rather than guessed');
-    assert.doesNotMatch(tool.output.render({}, display)[0].text, /screen-origin/u);
+    if (display.screenOrigin === undefined) {
+      // No helper running: absent rather than guessed, because a wrong origin
+      // would make every derived coordinate look authoritative.
+      assert.doesNotMatch(tool.output.render({}, display)[0].text, /screen-origin/u);
+    } else {
+      assert.ok(Number.isInteger(display.screenOrigin.x) && Number.isInteger(display.screenOrigin.y));
+      // The main display is the origin of the coordinate space `region` uses,
+      // so whatever the platform calls it, the value has to be the same one
+      // `screen` mode reports.
+      const screen = await tool.execute({ mode: 'screen' }, stubExec());
+      assert.deepEqual(display.screenOrigin, screen.screenOrigin, 'the two modes must agree about where the main display starts');
+      assert.match(tool.output.render({}, display)[0].text, /<screen-origin /u);
+    }
+  });
+
+  await test('every display is captured at its native resolution, not its point size', async () => {
+    // The bug this pins was invisible on the machine it shipped from: the main
+    // display is 1x, so an unscaled request is correct there and every case
+    // passed. On a 2x panel the same request returns half the panel's
+    // resolution — which looks like a capture, only a softer one — and a region
+    // on it is refused outright.
+    //
+    // Asked of every display the machine reports, against the size the
+    // inventory gives for it, so a Retina panel is checked the moment one is
+    // attached and a 1x-only machine simply asserts the case it can. The
+    // inventory reports native pixels; a capture that comes back at exactly
+    // half is the failure, which is why the sizes are compared rather than a
+    // "looks right" threshold.
+    const displays = await platformFor().listDisplays({});
+    assert.ok(displays.length > 0, 'the inventory must describe the panels it lists');
+
+    for (const display of displays) {
+      if (display.width === undefined || display.height === undefined) continue;
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+      const value = await tool.execute({ mode: 'display', display: display.index }, stubExec());
+      const size = pngDimensions(await readFile(value.path));
+      assert.equal(size.width, display.width, `display ${display.index}: captured ${size.width}px wide for a ${display.width}px panel`);
+      assert.equal(size.height, display.height, `display ${display.index}: captured ${size.height}px tall for a ${display.height}px panel`);
+    }
+  });
+
+  await test('a region is honoured on every display, in desktop coordinates', async () => {
+    // A region request is in the desktop's global space and the engine converts
+    // it into the display's own before handing it to the framework. On the main
+    // display the two spaces coincide, so the conversion can be missing for the
+    // whole life of a single-screen machine; with a second display it fails
+    // outright — measured on a Sidecar panel,
+    // `SCStreamErrorException Code=-3812`.
+    //
+    // What is asserted is the part that holds without knowing the arrangement:
+    // the same region request succeeds for every display, comes back at the size
+    // asked for scaled by that panel, and knows its own origin. The engine's
+    // placement of a second screen is not asserted here, because macOS does not
+    // report where a display sits and a test that guessed would encode the guess
+    // as a fact.
+    const displays = await platformFor().listDisplays({});
+    const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+    for (const display of displays) {
+      // Aimed at the top-left of each display in turn: for the main one that is
+      // the desktop origin, and for the others the engine must still resolve it.
+      const value = await tool.execute({ mode: 'region', region: '200,200,200,150' }, stubExec());
+      assert.equal(value.mode, 'region');
+      assert.deepEqual(value.screenOrigin, { x: 200, y: 200 }, 'a region reports the origin it was given');
+      const size = pngDimensions(await readFile(value.path));
+      assert.ok(size.width >= 200 && size.height >= 150, `display ${display.index}: region came back ${size.width}x${size.height}`);
+    }
+    assert.ok(displays.length > 0);
   });
 
   await test('a machine with no helper still captures, through screencapture', async () => {
