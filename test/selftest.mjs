@@ -1208,6 +1208,27 @@ await test('separates a TCC denial from every other failure', () => {
   assert.equal(classifyFailure(''), OTHER);
 });
 
+await test('a denied region capture is a denial too, not an ordinary failure', () => {
+  // The wording depends on what was asked for, and this was measured with the
+  // grant actually revoked on macOS 26.6.2: `-m` and `-D` produce
+  // "could not create image from display", while `-R` produces
+  // "could not create image from **rect**".
+  //
+  // Matching only the first meant a denied *region* capture was classified as an
+  // ordinary failure — so instead of the onboarding steps, the user got a bare
+  // "could not create image from rect", which names no remedy, for the one mode
+  // the tool description recommends. Only the prefix is shared between the two
+  // messages, so that is what is matched, and this case is what keeps the
+  // distinction from being narrowed again by someone tidying the string.
+  assert.equal(classifyFailure('could not create image from rect'), DENIED);
+  assert.equal(classifyFailure('could not create image from display'), DENIED);
+  // And the shared prefix must not swallow failures that are not denials, or a
+  // real problem would be answered with instructions to grant a permission the
+  // user already has.
+  assert.equal(classifyFailure('Invalid display specified. Must be a number from 1-2'), OTHER);
+  assert.equal(classifyFailure('screencapture: cannot write file'), OTHER);
+});
+
 await test('guidance names the exact executable to grant', () => {
   const english = guidance({ locale: 'en' }).join('\n');
   const chinese = guidance({ locale: 'zh' }).join('\n');
