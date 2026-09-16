@@ -1225,6 +1225,29 @@ await test('validates arguments through the harness schema', async () => {
   );
 });
 
+await test('the call budget is the caller\'s, inside the ceiling the tool declares', async () => {
+  // The harness enforces `timeoutMs` on the tool declaration as a hard deadline
+  // and discards the result when it fires, so a call asking for longer than the
+  // ceiling must be refused here — where it can be explained — rather than
+  // allowed to run into a deadline that throws the frames away.
+  const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+  for (const timeout_ms of [0, 999, 1.5, 'soon', 3600000]) {
+    // A non-integer is refused by the harness's own argument validation before
+    // this code sees it, and the rest by the range check here; both name the
+    // parameter, which is the property worth holding.
+    await assert.rejects(
+      () => tool.execute({ mode: 'region', region: '0,0,8,8', timeout_ms }, stubExec()),
+      /timeout_ms/u,
+      `timeout_ms=${JSON.stringify(timeout_ms)}`,
+    );
+  }
+  // And the ceiling is declared rather than implied: a caller may set a budget
+  // far above the plugin's default, because watching a slow process is a job
+  // the default was never sized for.
+  assert.ok(tool.timeoutMs > resolveSettings({}).timeoutMs, 'the ceiling leaves room above the default');
+  assert.ok(Number.isFinite(tool.timeoutMs) && tool.timeoutMs > 0, 'and it is a number the harness accepts');
+});
+
 await test('refuses a capture when the model route cannot be resolved', async () => {
   const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
   // No agent on the execution context and no llm service: the route is

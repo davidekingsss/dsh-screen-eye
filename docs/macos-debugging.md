@@ -34,7 +34,7 @@ for a change).
 node test/selftest.mjs
 ```
 
-Expect **125 passed, 0 failed, and 2 cases that run rather than skip**. Those two are
+Expect **126 passed, 0 failed, and 2 cases that run rather than skip**. Those two are
 the ones about TCC denial and onboarding guidance: they skip on Windows and must
 execute here. If the suite is not green, stop and report the failure — nothing below
 is worth measuring on top of a broken build.
@@ -263,7 +263,7 @@ chat message, and structure it as:
 # macOS findings — <date>, <macOS version>, <hardware>
 
 ## Suite
-125 passed, 0 failed, 2 executed.
+126 passed, 0 failed, 2 executed.
 
 ## Step 3 — still detection (the load-bearing assumption)
 stripped equal: <true|false>; raw equal: <true|false>

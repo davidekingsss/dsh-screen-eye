@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-125 cases, all passing, on Windows; 2 of them skip themselves there because they
+126 cases, all passing, on Windows; 2 of them skip themselves there because they
 are about the macOS Screen Recording model. The suite runs without a harness:
 the logic modules are imported directly and the tool definitions are exercised
 through a stubbed context.
