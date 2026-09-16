@@ -135,7 +135,12 @@ Windows needs none of this — see [Windows](#windows).
 
 ## Configuration
 
-All keys are optional.
+All keys are optional — and all of them are editable from the harness's own
+settings page, **Settings → Plugins → Screen Eye**, or by hand in
+`~/.dsh/settings.yaml` under `screen-eye:`. Either way an edit reaches the next
+call without a restart, and the plugin's mount entry stays the base that a
+cleared field falls back to. [`docs/settings.md`](docs/settings.md) has the
+three layers, the card, and the two platform constraints behind it.
 
 | Key | Default | Meaning |
 |---|---|---|

@@ -34,10 +34,10 @@ for a change).
 node test/selftest.mjs
 ```
 
-Expect **126 passed, 0 failed, and 2 cases that run rather than skip**. Those two are
-the ones about TCC denial and onboarding guidance: they skip on Windows and must
-execute here. If the suite is not green, stop and report the failure — nothing below
-is worth measuring on top of a broken build.
+Expect **134 passed, 0 failed, 0 skipped**. Nothing skips on macOS: the two cases
+that skip on Windows are the ones about TCC denial and onboarding guidance, and
+they must execute here. If the suite is not green, stop and report the failure —
+nothing below is worth measuring on top of a broken build.
 
 Report: the exact pass/fail/skip counts, and the output of `node --version`,
 `sw_vers`, and `system_profiler SPDisplaysDataType | head -40`.
@@ -263,7 +263,7 @@ chat message, and structure it as:
 # macOS findings — <date>, <macOS version>, <hardware>
 
 ## Suite
-126 passed, 0 failed, 2 executed.
+134 passed, 0 failed, 0 skipped.
 
 ## Step 3 — still detection (the load-bearing assumption)
 stripped equal: <true|false>; raw equal: <true|false>

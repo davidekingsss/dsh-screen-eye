@@ -7,10 +7,11 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-126 cases, all passing, on Windows; 2 of them skip themselves there because they
-are about the macOS Screen Recording model. The suite runs without a harness:
-the logic modules are imported directly and the tool definitions are exercised
-through a stubbed context.
+134 cases: 132 pass on Windows and 2 skip themselves there, because they are
+about the macOS Screen Recording model. On macOS all 134 run. The suite runs
+without a harness: the logic modules are imported directly, the tool definitions
+are exercised through a stubbed context, and the browser half is loaded the way
+the harness loads it — as a classic script — and rendered by a stand-in React.
 
 It runs on both platforms the plugin serves, and CI runs it on both. Cases that
 are about a platform's own model — the macOS permission classification, the
@@ -691,7 +692,38 @@ captured, and the wait timeout was set to 12s against a 30s default, which is th
 parameter that has to cover the user reading a message before triggering
 anything.
 
-### 8.5 What a burst is allowed to cost, checked against the deployment
+### 8.5 The settings surface, and how far it was verified
+
+The plugin's settings are now a namespace in the harness's settings document
+rather than only a mount entry, and a browser half puts a card for it in
+**Settings → Plugins**. What that rests on, and what was actually checked:
+
+- **The pairing is by name.** The Host registers `screen-eye`; the browser
+  registers a `settings.plugin.item` card keyed by the same string, and the shell
+  pairs them. A self-test reads both — `SETTINGS_NAMESPACE` from the Host half,
+  the registered key from the browser half, after loading `client/client.js` the
+  way the harness does, as a classic script on `window.__ModuleLoader__.load`.
+- **The layering.** The mount entry is the base and the user document overrides
+  it; a cleared field falls back to the entry. Asserted by inspecting what
+  `apply()` hands `settings.installSection`, and by moving the source the way the
+  settings service does and watching the next tool call run on the new value.
+- **Live, not restart-only.** The tools read settings through a reader per call.
+  The case drives that through an observable that needs no capture: a budget
+  below the floor can only have come from the edited source, and the same call
+  passes validation once the source is sane again.
+- **The card itself.** Loaded in a `node:vm` context with a twenty-line React
+  stand-in — enough to render it, open it, type into its controls and press save,
+  which asserts that seven controls render in order, that edits are staged rather
+  than written as they are typed, that save issues one typed write per field, that
+  a refused write keeps the draft, and that a value outside a field's range blocks
+  the save. It also asserts that an unserved namespace renders nothing at all.
+
+Two things are **not** verified, and are worth saying plainly: the card has never
+been rendered by a browser, and it has never been seen inside the running
+settings page. Both are one restart away — the harness composes its client graph
+at startup — and are the first thing to check after one.
+
+### 8.6 What a burst is allowed to cost, checked against the deployment
 
 The ten-frame cap this plugin shipped with was its own guess, and the guess was
 wrong. It rested on "the harness allows 20 images per message", which is true of

@@ -11,12 +11,13 @@
  */
 
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import vm from 'node:vm';
 
-import { Config, apply } from '../index.mjs';
+import { Config, SETTINGS_NAMESPACE, apply } from '../index.mjs';
 import { buildCaptureName, captureStamp, isCaptureName } from '../lib/capture-name.mjs';
 import {
   CAPTURE_MODES,
@@ -68,10 +69,25 @@ import {
   grantTargetPath,
   probeScreenRecording,
 } from '../lib/permission.mjs';
-import { screenPermissionTool } from '../lib/permission-tool.mjs';
+import { screenPermissionTool as screenPermissionToolRaw } from '../lib/permission-tool.mjs';
 import { capturesToRemove, pruneCaptures } from '../lib/retention.mjs';
-import { captureFailureError, screenshotTool } from '../lib/screenshot-tool.mjs';
+import { captureFailureError, screenshotTool as screenshotToolRaw } from '../lib/screenshot-tool.mjs';
 import { resolveOutputPath, resolveSettings } from '../lib/settings.mjs';
+
+/**
+ * Both tools take a *reader* for settings rather than a settings object, because
+ * the values can change while the host runs — the settings page writes to a
+ * document the plugin is a layer over. Almost every case here wants one fixed
+ * configuration, so they keep constructing the tools the way they always did;
+ * the cases about live settings call the raw constructors.
+ *
+ * @param factory - the real constructor.
+ * @returns a constructor taking a settings object.
+ */
+const withFixedSettings = (factory) => (first, settings, third) => factory(first, () => settings, third);
+
+const screenshotTool = withFixedSettings(screenshotToolRaw);
+const screenPermissionTool = withFixedSettings(screenPermissionToolRaw);
 
 /**
  * The macOS permission model, named rather than looked up.
@@ -2432,11 +2448,20 @@ await test('a display origin reaches the model when the platform reports one', (
 
 process.stdout.write('\nplugin wiring\n');
 
-/** A context that records tool registration and runs injected callbacks at once. */
+/**
+ * A context that records tool registration and runs injected callbacks at once.
+ *
+ * The one place it is deliberately faithful rather than convenient: a callback
+ * injected for a service this host does not have never runs, which is the
+ * loader's actual contract and the reason `apply()` can depend on the settings
+ * service without depending on every deployment having one. Pass
+ * `{ settings: null }` for a host with no settings document at all.
+ */
 function wiringCtx(options = {}) {
   const registered = [];
   const definitions = [];
   const errors = [];
+  const sections = [];
   const logger = Object.assign(() => logger, {
     info() {},
     warn() {},
@@ -2447,6 +2472,13 @@ function wiringCtx(options = {}) {
       errors.push(String(format).replace(/%s/gu, () => String(args[index++])));
     },
   });
+  const settings = options.settings === null
+    ? undefined
+    : options.settings ?? {
+      installSection(owner, ns, schema, entry, hooks) {
+        sections.push({ owner, ns, schema, entry, hooks });
+      },
+    };
   const ctx = {
     logger: () => logger,
     tools: {
@@ -2459,13 +2491,93 @@ function wiringCtx(options = {}) {
         return () => {};
       },
     },
-    // The real loader waits for the service; the test provides it immediately.
-    inject(_services, callback) {
-      callback(ctx);
+    settings,
+    get() {
+      // No attachment store and no llm route: enough for the tool to mount,
+      // and the absence is what the wiring cases assert against.
+      return undefined;
+    },
+    inject(services, callback) {
+      const available = { tools: ctx.tools, attachments: options.attachments ?? {}, settings };
+      if (services.every((service) => available[service] !== undefined)) callback(ctx);
     },
   };
-  return { ctx, registered, definitions, errors };
+  return { ctx, registered, definitions, errors, sections };
 }
+
+await test('apply() offers its settings as a namespace, based on the mounted entry', async () => {
+  // The bundle entry is the base layer: a deployment with no settings document
+  // gets exactly what it mounted with, and a field a user clears falls back to
+  // it. That is the whole reason to install a section rather than register a
+  // namespace outright — the mount stays the default.
+  await onPlatform('darwin', () => {
+    const { ctx, sections } = wiringCtx();
+    apply(ctx, { locale: 'zh', keepRecent: 7 });
+    assert.equal(sections.length, 1, 'one namespace, installed once');
+    const [section] = sections;
+    assert.equal(section.ns, SETTINGS_NAMESPACE);
+    assert.equal(section.ns, 'screen-eye', 'the namespace is the card key in the client half');
+    assert.equal(section.entry.locale, 'zh', 'the entry is the base layer, not the defaults');
+    assert.equal(section.entry.keepRecent, 7);
+    assert.equal(section.entry.maxDimension, 8192, 'and it is schema-resolved, not raw');
+    assert.equal(typeof section.hooks.setSource, 'function');
+  });
+});
+
+await test('a settings edit reaches the next call without a restart', async () => {
+  // The point of the section: the tools read the source per call, so what the
+  // settings page writes is what the next capture uses. A value captured at
+  // mount would make the page a decoration.
+  //
+  // The observable used here is the call budget, because it is decided before
+  // anything touches the screen: a timeout the tool would refuse can only have
+  // come from the moved source, and once the source is sane the same call gets
+  // past that check and fails later, for a reason this case can name.
+  await onPlatform('darwin', async () => {
+    const { ctx, definitions, sections } = wiringCtx();
+    apply(ctx, { requireImageCapableModel: false });
+    const screenshot = definitions.find((definition) => definition.name === 'screenshot');
+    assert.ok(screenshot, 'the screenshot tool mounts');
+    const args = { mode: 'region', region: '0,0,8,8' };
+
+    await assert.rejects(
+      () => screenshot.execute(args, stubExec()),
+      /no attachment service is mounted/u,
+      'the mounted entry is what the first call runs on',
+    );
+
+    // The Host resolving the namespace over the user's document, simulated the
+    // way the settings service does it: the source moves underneath the tool.
+    sections[0].hooks.setSource(() => ({ timeoutMs: 500, requireImageCapableModel: false }));
+    await assert.rejects(
+      () => screenshot.execute(args, stubExec()),
+      /timeout_ms must be a whole number/u,
+      'a budget below the floor can only have been read at call time',
+    );
+
+    // And a value written back to something sane takes effect the same way,
+    // which is what proves the refusal above was the reading and not a latch.
+    sections[0].hooks.setSource(() => ({ timeoutMs: 60000, requireImageCapableModel: false }));
+    await assert.rejects(
+      () => screenshot.execute(args, stubExec()),
+      /no attachment service is mounted/u,
+      'the edited budget passed validation on the next call',
+    );
+  });
+});
+
+await test('a host with no settings document still mounts on its entry config', async () => {
+  // `installSection` is optional by design: the composition entry is the
+  // fallback when the provider is absent, and a plugin that refused to mount
+  // without a settings document would be a plugin that cannot run on a
+  // deployment that keeps its configuration in the bundle patch.
+  await onPlatform('darwin', () => {
+    const { ctx, registered, sections } = wiringCtx({ settings: null });
+    assert.doesNotThrow(() => apply(ctx, { locale: 'zh' }));
+    assert.deepEqual(registered.sort(), ['screen_permission', 'screenshot']);
+    assert.equal(sections.length, 0, 'nothing was installed, because there was nowhere to install it');
+  });
+});
 
 /**
  * Run a case as if the host were a different platform.
@@ -2595,6 +2707,323 @@ await test('apply() registers nothing on a host with no engine', async () => {
     apply(ctx, {});
     assert.deepEqual(registered, [], 'no capture tool may exist without a capture engine');
   });
+});
+
+process.stdout.write('\nthe settings card (browser half)\n');
+
+/**
+ * Load `client/client.js` the way the harness does: as a classic script that
+ * registers itself on `window.__ModuleLoader__` and hands back a factory.
+ *
+ * This is the only way to test the browser half without a browser, and it is
+ * worth doing because the half has no compiler in front of it: the file is
+ * hand-written precisely so the plugin needs no build step, which means nothing
+ * else would catch a mistake in it before a user opened the settings page.
+ *
+ * @param React - the React stand-in the card should be given. It has to be the
+ *   same instance the caller renders with, or the card's state and the
+ *   renderer's would live in two different places.
+ * @returns the registered plugin body, plus what the factory required.
+ */
+function loadClientHalf(React) {
+  const registrations = [];
+  const sandbox = {
+    window: { __ModuleLoader__: { load: (registration) => registrations.push(registration) } },
+    document: {
+      // Only reached from an effect, which the tiny React below never runs.
+      getElementById: () => null,
+      createElement: () => ({ set textContent(value) {}, id: '' }),
+      head: { appendChild() {} },
+    },
+    console,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(readFileSync(new URL('../client/client.js', import.meta.url), 'utf8'), sandbox);
+
+  assert.equal(registrations.length, 1, 'the script registers exactly one bundle');
+  const [registration] = registrations;
+  assert.equal(registration.id, 'dsh-screen-eye');
+
+  const required = [];
+  const body = registration.factory((specifier) => {
+    required.push(specifier);
+    if (specifier === 'react') return React;
+    throw new Error(`the card required an unexpected module: ${specifier}`);
+  });
+  return { body, required };
+}
+
+/**
+ * As much React as this card uses: elements, the store hook, and state that
+ * actually re-renders, so a control can be driven and the result inspected.
+ *
+ * Deliberately not a general implementation — it renders one component with
+ * fixed props and no reconciliation. That is the whole contract the card needs,
+ * and a real renderer would mean a dependency this plugin does not have.
+ *
+ * @returns the React stand-in and a render function.
+ */
+function tinyReact() {
+  let cells = [];
+  let cursor = 0;
+  let current = null;
+
+  const draw = () => {
+    cursor = 0;
+    current.tree = current.component(current.props);
+    return current.tree;
+  };
+
+  const React = {
+    createElement: (type, props, ...children) => ({
+      type,
+      props: props ?? {},
+      children: children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false),
+    }),
+    useCallback: (fn) => fn,
+    useEffect: () => {},
+    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+    useState(initial) {
+      const index = cursor;
+      cursor += 1;
+      if (!(index in cells)) cells[index] = typeof initial === 'function' ? initial() : initial;
+      return [cells[index], (next) => {
+        cells[index] = typeof next === 'function' ? next(cells[index]) : next;
+        draw();
+      }];
+    },
+  };
+
+  return {
+    React,
+    /**
+     * Render a component and hand back a live handle.
+     *
+     * The handle rather than the tree, because the card re-renders itself from
+     * its own state: reading `.tree` after a control is used is what makes a
+     * driven interaction assertable, and re-rendering any other way would run
+     * the hooks out of order.
+     *
+     * @param component - the function component.
+     * @param props - its props.
+     * @returns a handle whose `tree` is always the latest render.
+     */
+    render(component, props) {
+      cells = [];
+      current = { component, props, tree: null };
+      draw();
+      return {
+        get tree() { return current.tree; },
+        rerender: draw,
+      };
+    },
+  };
+}
+
+/**
+ * Find every element in a rendered tree whose props match.
+ *
+ * Child function components are expanded here rather than by a reconciler,
+ * which is legitimate for this card and only for this card: nothing below its
+ * top level uses a hook, so calling one with its props *is* rendering it. The
+ * alternative — a real renderer — is a dependency this plugin does not have.
+ *
+ * @param tree - a rendered element tree.
+ * @param match - predicate over an element.
+ * @returns the matching elements, in tree order.
+ */
+function findAll(tree, match) {
+  const found = [];
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (typeof node.type === 'function') { walk(node.type(node.props)); return; }
+    if (match(node)) found.push(node);
+    node.children.forEach(walk);
+  };
+  walk(tree);
+  return found;
+}
+
+/** Find one element by its class name. */
+const byClass = (tree, className) => findAll(tree, (node) => node.props.className === className);
+
+/**
+ * A settings scope that answers from a fixed section and records writes.
+ * @param section - the resolved section the card should read.
+ * @param user - the raw user layer, whose keys mark overridden fields.
+ * @returns the scope plus what it was asked to write.
+ */
+function stubScope(section, user = {}) {
+  const writes = [];
+  return {
+    writes,
+    subscribe: () => () => {},
+    getSnapshot: () => ({
+      status: 'ready', value: section, base: {}, user, revision: 1, writable: true, mode: 'host',
+    }),
+    set: async (field, value) => { writes.push({ op: 'set', field, value }); },
+    unset: async (field) => { writes.push({ op: 'unset', field }); },
+    mutate: async () => {},
+  };
+}
+
+await test('the card claims the namespace the Host registers, and only that one', () => {
+  // The two halves are paired by this string and by nothing else: the settings
+  // shell dispatches a card per namespace the Host serves that some browser
+  // plugin claims. A typo here is a card that never appears, with no error
+  // anywhere to say why — which is exactly the kind of thing a test is for.
+  const react = tinyReact();
+  const { body, required } = loadClientHalf(react.React);
+  assert.equal(body.name, 'dsh-screen-eye');
+  assert.deepEqual([...body.inject].sort(), ['locale', 'settingsScope', 'slots']);
+  assert.deepEqual(required, ['react'], 'the card requires nothing but the shared React');
+
+  const bound = [];
+  const registered = [];
+  const dictionaries = [];
+  const ctx = {
+    locale: {
+      bind: (ns) => (key) => `${ns}:${key}`,
+      register: (ns, locale, dict) => { dictionaries.push({ ns, locale, dict }); return () => {}; },
+    },
+    settingsScope: { bind: (spec) => { bound.push(spec); return stubScope({}); } },
+    slots: {
+      inject(_name, callback) { callback(); },
+      register(spec, component) { registered.push({ spec, component }); return () => {}; },
+    },
+    effect(callback) { callback(); },
+  };
+  body.apply(ctx);
+
+  // The spec crosses the vm boundary, so its prototype is the sandbox's; the
+  // namespace is what matters and it is a primitive.
+  assert.equal(bound.length, 1);
+  assert.equal(bound[0].namespace, SETTINGS_NAMESPACE, 'bound to the Host namespace');
+  assert.equal(registered.length, 1);
+  assert.equal(registered[0].spec.name, 'settings.plugin.item');
+  assert.equal(registered[0].spec.key, SETTINGS_NAMESPACE, 'the card key is the namespace');
+  assert.ok(registered[0].spec.inject().scope, 'the card is handed its bound scope');
+
+  // Copy travels with the card: a third-party namespace the locale registry has
+  // never heard of registers its own dictionaries.
+  assert.deepEqual(dictionaries.map((entry) => entry.locale).sort(), ['en', 'zh']);
+  for (const entry of dictionaries) assert.equal(entry.ns, 'screen-eye');
+  assert.equal(dictionaries[0].dict.name, dictionaries[1].dict.name, 'both languages name the card');
+  assert.ok(dictionaries.find((entry) => entry.locale === 'zh').dict.timeoutMs.includes('毫秒'));
+  assert.ok(dictionaries.find((entry) => entry.locale === 'zh').dict.save === '保存');
+});
+
+await test('the card renders every setting, and nothing at all when unserved', () => {
+  const react = tinyReact();
+  const { body } = loadClientHalf(react.React);
+  const registered = [];
+  const ctx = {
+    locale: { bind: () => (key) => key, register: () => () => {} },
+    settingsScope: { bind: () => stubScope({}) },
+    slots: { inject: (_name, callback) => callback(), register: (spec, component) => { registered.push(component); return () => {}; } },
+    effect: (callback) => callback(),
+  };
+  body.apply(ctx);
+
+  const component = registered[0];
+  const scope = stubScope({ locale: 'zh', keepRecent: 20, maxDimension: 8192 }, { keepRecent: 20 });
+  const view = react.render(component, { scope, locale: undefined, t: (key) => key });
+  // A collapsed card is a header and nothing else; opening it is one click.
+  byClass(view.tree, 'screye-header')[0].props.onClick();
+
+  const inputs = findAll(view.tree, (node) => node.props['aria-label'] !== undefined);
+  assert.deepEqual(
+    inputs.map((node) => node.props['aria-label']),
+    ['locale', 'outputDir', 'keepRecent', 'timeoutMs', 'maxDimension', 'requireImageCapableModel', 'deleteAfterCommit'],
+    'seven settings, seven controls, in the order they are declared',
+  );
+  // The stored value is what the control shows, in the field's own encoding.
+  assert.equal(inputs[0].props.value, 'zh');
+  assert.equal(inputs[2].props.value, '20');
+  assert.equal(inputs[5].props.checked, true, 'a boolean renders as a checkbox');
+  assert.equal(inputs[6].props.checked, false);
+  // An overridden field is marked and offers a reset; the others do not.
+  assert.equal(byClass(view.tree, 'screye-badge').length, 1);
+  assert.equal(byClass(view.tree, 'screye-reset').length, 1);
+
+  // A namespace this deployment does not serve leaves no trace.
+  const absent = stubScope({});
+  absent.getSnapshot = () => ({
+    status: 'unavailable', value: undefined, base: undefined, user: undefined,
+    revision: 0, writable: false, mode: 'memory',
+  });
+  assert.equal(react.render(component, { scope: absent, locale: undefined, t: (key) => key }).tree, null);
+});
+
+await test('an edit is staged and written on save, and a refusal keeps it', async () => {
+  const react = tinyReact();
+  const { body } = loadClientHalf(react.React);
+  const registered = [];
+  const scope = stubScope({ locale: 'en', keepRecent: 50, requireImageCapableModel: true }, { keepRecent: 50 });
+  const ctx = {
+    locale: { bind: () => (key) => key, register: () => () => {} },
+    settingsScope: { bind: () => scope },
+    slots: { inject: (_name, callback) => callback(), register: (spec, component) => { registered.push(component); return () => {}; } },
+    effect: (callback) => callback(),
+  };
+  body.apply(ctx);
+
+  const component = registered[0];
+  const props = { scope, locale: undefined, t: (key) => key };
+  const view = react.render(component, props);
+
+  // The card starts collapsed; clicking its header is how a user opens it.
+  assert.equal(byClass(view.tree, 'screye-save').length, 0, 'a collapsed card draws no controls');
+  byClass(view.tree, 'screye-header')[0].props.onClick();
+
+  const control = (label) => findAll(view.tree, (node) => node.props['aria-label'] === label)[0];
+  control('keepRecent').props.onChange({ target: { value: '5' } });
+  control('locale').props.onChange({ target: { value: 'zh' } });
+  control('requireImageCapableModel').props.onChange({ target: { checked: false } });
+  // Nothing has been written yet: every settings write is a durable document
+  // mutation, so an edit is staged until the user saves it.
+  assert.deepEqual(scope.writes, []);
+
+  assert.equal(byClass(view.tree, 'screye-save')[0].props.disabled, false, 'staged edits enable the save');
+  assert.equal(byClass(view.tree, 'screye-pending').length, 1, 'and say so on the header');
+
+  await byClass(view.tree, 'screye-save')[0].props.onClick();
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.deepEqual(scope.writes, [
+    { op: 'set', field: 'keepRecent', value: 5 },
+    { op: 'set', field: 'locale', value: 'zh' },
+    { op: 'set', field: 'requireImageCapableModel', value: false },
+  ], 'each staged field is written as its own typed value');
+
+  // A refused write keeps the draft, so the user corrects rather than retypes.
+  const refusing = stubScope({ keepRecent: 50 });
+  refusing.set = async () => { throw new Error('SETTINGS_CONFLICT'); };
+  const refused = stubScope({ keepRecent: 50 });
+  refused.getSnapshot = refusing.getSnapshot;
+  refused.set = async () => { throw new Error('SETTINGS_CONFLICT'); };
+  const refusedView = react.render(component, { scope: refused, locale: undefined, t: (key) => key });
+  byClass(refusedView.tree, 'screye-header')[0].props.onClick();
+  findAll(refusedView.tree, (node) => node.props['aria-label'] === 'keepRecent')[0]
+    .props.onChange({ target: { value: '9' } });
+  await byClass(refusedView.tree, 'screye-save')[0].props.onClick();
+  await new Promise((resolve) => { setImmediate(resolve); });
+
+  assert.equal(byClass(refusedView.tree, 'screye-failed').length, 1, 'the refusal is reported');
+  assert.equal(
+    findAll(refusedView.tree, (node) => node.props['aria-label'] === 'keepRecent')[0].props.value,
+    '9',
+    'and the edited value is still in the box',
+  );
+
+  // A draft that is not a value the field takes blocks the save rather than
+  // being dropped: silently discarding a typed number is how a form lies.
+  const typed = react.render(component, props);
+  byClass(typed.tree, 'screye-header')[0].props.onClick();
+  findAll(typed.tree, (node) => node.props['aria-label'] === 'timeoutMs')[0]
+    .props.onChange({ target: { value: '10' } });
+  assert.equal(byClass(typed.tree, 'screye-save')[0].props.disabled, true, 'a value below the floor blocks the save');
+  assert.equal(byClass(typed.tree, 'screye-invalid').length, 1, 'and says why');
 });
 
 // Remove every capture the suite took. Done unconditionally, so a failing

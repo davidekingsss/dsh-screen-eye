@@ -44,6 +44,17 @@ export const name = 'dsh-screen-eye';
 export const inject = ['tools'];
 
 /**
+ * Settings namespace this plugin owns.
+ *
+ * The same string is the `settings.plugin.item` key in `client/client.js`, and
+ * that pairing by name is the whole mechanism: the settings shell dispatches a
+ * card for each namespace the Host serves that some browser plugin claims, and
+ * pairs the two without knowing what either means. Two places, one string, and
+ * a self-test that reads both so they cannot drift.
+ */
+export const SETTINGS_NAMESPACE = 'screen-eye';
+
+/**
  * User-editable configuration.
  *
  * The defaults here and the fallbacks in `lib/settings.mjs` must agree; the
@@ -149,7 +160,33 @@ export function apply(ctx, config = {}) {
     return;
   }
 
-  const settings = resolveSettings(config);
+  // The configuration this plugin runs on, and where it comes from.
+  //
+  // The bundle entry is the *base*: it is what the plugin was mounted with, it
+  // is what a deployment that has no settings document gets, and it is what a
+  // field falls back to when the user clears it. When the harness's settings
+  // service is present the namespace above joins the user's settings document
+  // as an override layer, which is what makes these values editable from the
+  // settings page and from `settings.yaml` — and, because the source is read
+  // per call rather than captured at mount, what makes an edited value take
+  // effect without a restart. The tools below read through `readSettings`, so
+  // the source moving underneath them is the whole point.
+  const entry = Config(config ?? {});
+  let source = () => entry;
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, Config, entry, {
+      // The resolved section is schema-validated by construction, so it goes
+      // through the same normalisation the entry does — one path, not two.
+      setSource: (current) => {
+        source = () => Config(current());
+      },
+      // Nothing here derives from settings at mount time, so a change has
+      // nothing to re-judge: the next call reads the new value.
+      onChange: () => {},
+    });
+  });
+  const readSettings = () => resolveSettings(source());
+
   // Registration order matters for reporting: the permission tool is built
   // first so that a later failure has somewhere to be reported from, and it
   // reads this array at call time rather than at build time.
@@ -162,7 +199,7 @@ export function apply(ctx, config = {}) {
     registerTool(
       ctx,
       log,
-      screenPermissionTool(platform.permission, settings, issues),
+      screenPermissionTool(platform.permission, readSettings, issues),
       'screen_permission',
       issues,
     );
@@ -172,8 +209,8 @@ export function apply(ctx, config = {}) {
   // without one there is nowhere to commit the image, and handing back a bare
   // path would defeat the point of the tool.
   ctx.inject(['attachments'], (imageCtx) => {
-    registerTool(imageCtx, log, screenshotTool(imageCtx, settings, log), 'screenshot', issues);
+    registerTool(imageCtx, log, screenshotTool(imageCtx, readSettings, log), 'screenshot', issues);
   });
 
-  log.info('mounted: captures land in %s', settings.outputDir);
+  log.info('mounted: captures land in %s', readSettings().outputDir);
 }

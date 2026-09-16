@@ -16,13 +16,16 @@
   "main": "index.mjs",
   "exports": {
     ".": "./index.mjs",
+    "./client": "./client/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "index.mjs",
     "lib/",
+    "client/",
     "docs/",
+    "tools/",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -71,6 +74,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
     }
   }
 }
