@@ -1238,7 +1238,50 @@ await test('guidance names the exact executable to grant', () => {
   assert.ok(chinese.includes(grantTargetPath()));
   assert.match(chinese, /屏幕录制/u);
   assert.match(english, /Screen & System Audio Recording/u);
-  assert.match(english, /No DSH restart is needed/u);
+  assert.match(english, /DSH does not have to be restarted/u);
+});
+
+await test('guidance walks the three states a user can actually be in', () => {
+  // Measured on macOS 26.6.2 by producing each state, because they are not the
+  // same state and the guide used to describe only one of them:
+  //
+  //   never requested        → a system prompt appears, and it adds the app to
+  //                            the list itself, with the switch OFF
+  //   granted, then off      → no prompt; the entry is there, switched off
+  //   removed from the list  → a prompt appears again on the next request
+  //
+  // What the guide has to get across is the step in the middle, which is the one
+  // nothing else can do: being in the list is not being granted, so a capture
+  // attempted right after the prompt fails again and the user has to be told to
+  // switch the entry on rather than to try again.
+  const english = guidance({ locale: 'en' }).join('\n');
+  const chinese = guidance({ locale: 'zh' }).join('\n');
+
+  for (const text of [english, chinese]) {
+    // The prompt is described as conditional, because it depends on whether the
+    // host has an identity macOS can attribute the request to — a desktop app
+    // gets one and a launchd-reparented host does not.
+    assert.match(text, /(system dialog|系统对话框)/u, 'the guide mentions the system prompt');
+    // And the manual step is stated as a step, not implied by "it is listed".
+    assert.match(text, /(Switch it on|把它的开关打开)/u, 'the guide says the switch must be turned on');
+    assert.match(text, /(OFF by default|默认是关闭的)/u, 'it says why that step is not automatic');
+    // Retrying before the switch is on is the failure this wording prevents.
+    assert.match(text, /(Do not retry|不要反复重试)/u);
+  }
+  // The entry name comes before the full path, because the list shows names:
+  // leading with the path asked the user to derive the thing the guide had just
+  // declined to state.
+  assert.ok(
+    english.indexOf('named node') < english.indexOf('/usr/local/bin/node'),
+    'the list name is given before the path',
+  );
+  assert.ok(
+    chinese.indexOf('条目名是 node') < chinese.indexOf('/usr/local/bin/node'),
+    'the list name is given before the path',
+  );
+  // And no English may leak into the Chinese guide, which a hard-coded
+  // "Look for …" sentence used to do.
+  assert.doesNotMatch(chinese, /Look for/u, 'the Chinese guide is not partly English');
 });
 
 await test('guidance falls back to English for an unknown locale', () => {
@@ -1644,7 +1687,7 @@ await test('a denied capture carries the onboarding steps, not the system string
   assert.match(message, /refused by macOS/u);
   assert.ok(message.includes(grantTargetPath()), 'the message must name what to grant');
   assert.match(message, /Screen & System Audio Recording/u);
-  assert.match(message, /No DSH restart is needed/u);
+  assert.match(message, /DSH does not have to be restarted/u);
   // The raw system string is replaced, not merely prefixed: it reads like a
   // bug and tells the user nothing they can act on.
   assert.doesNotMatch(message, /could not create image from display/u);

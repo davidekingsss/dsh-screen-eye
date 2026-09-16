@@ -66,17 +66,23 @@ screencapture: could not create image from display
 
 macOS gates screen capture behind the Screen Recording permission, keyed to the
 **responsible process** — the application macOS holds accountable for a whole
-process tree. A DeepSeek Harness host is often not a normal GUI application.
-The in-app plugin market restarts the host through a detached helper, so the
-host is reparented to `launchd` and has no application anywhere above it. When
-such a process asks for the screen, macOS cannot attribute the request to
-anything the user could grant, so it **denies it without ever showing a
-prompt**.
+process tree.
 
-The permission cannot be granted programmatically: the TCC databases are
-SIP-protected, `tccutil` only resets, and `CGRequestScreenCaptureAccess`
-refuses to prompt for a process that is not an app bundle. So this plugin does
-what is actually possible:
+What decides everything here is whether there is an **app identity to attribute
+the request to**, and it leads to two different paths:
+
+- **When the host is an app** — the desktop client, for instance — macOS **shows
+  a system prompt once**. But the prompt only adds the app **to the list**, and
+  the entry it adds is **switched off**: captures still fail until the user turns
+  that switch on by hand.
+- **When the host has no app identity** — the in-app plugin market restarts the
+  host through a detached helper, so it is reparented to `launchd` with no
+  application above it — macOS **cannot attribute the request and refuses
+  silently**, without ever showing the prompt.
+
+Either way there is one thing that fixes it: **the switch being on.** That
+cannot be done programmatically — the TCC databases are SIP-protected and
+`tccutil` only resets. So this plugin does what is actually possible:
 
 - it **detects** the denial by attempting a real capture and classifying the
   result, rather than guessing;
@@ -115,21 +121,45 @@ install time.
 Call `screenshot` once. If permission is missing, the result tells you exactly
 what to do, and `screen_permission` with `action: "guide"` walks through it:
 it checks first, opens the pane only when the grant really is missing, and
-returns the path to add. In short:
+returns the path to add.
 
-1. Open **System Settings → Privacy & Security → Screen & System Audio
-   Recording**.
-2. Click **+**, press **⌘⇧G**, paste the path the tool reported (normally the
-   `node` binary running the harness), and select it.
-3. Turn its switch on.
+**There are three states, and only one of them is "never granted".** All three
+were produced and observed on macOS 26.6.2, because they behave differently:
 
-No restart is needed — the grant applies to the next capture.
+| state | system prompt | in the list | captures work |
+| --- | --- | --- | --- |
+| **never requested** | **yes**, on the first request | after you open Settings | no |
+| granted, then switched off | no | yes, switch off | no |
+| removed from the list | **yes**, on the next request | after you open Settings | no |
+
+So the real sequence is **four steps**. Do them in order, and **do not retry in
+between**:
+
+1. **Watch for the system dialog** — *"「运行 Deepseek Harness」想要录制此电脑的屏幕
+   和音频。" / "…wants to record this computer's screen and audio."* If it appears,
+   click **Open System Settings**: it **adds the app to the list for you**. If it
+   does not appear (started from a terminal, or previously denied), open
+   **System Settings → Privacy & Security → Screen & System Audio Recording**
+   yourself.
+2. **Find the entry in the list.** It may already be there — the dialog in step 1
+   put it there. The list shows **file names, not paths**, so the name to look
+   for is normally `node`; the tool's report gives both that name and the full
+   path.
+3. **Turn its switch on.** ⚠️ **An entry the system added is OFF by default**, and
+   **being in the list is not being granted**. This step is yours to do.
+4. Then call the tool again. **No DSH restart is needed** — the grant applies to
+   the next capture.
+
+> **Why step 3 has to be spelled out**: doing anything between step 1 and step 3 —
+> judging, retrying, reporting a failure — is wrong. Until the switch is on, every
+> capture fails the same way, and that is not a fault; it is a sequence that has
+> not finished yet.
 
 If you start the harness from a terminal, granting that terminal application
 instead has the same effect.
 
-> macOS may periodically ask you to re-confirm this permission. Re-enabling the
-> same switch is enough.
+> macOS may periodically ask you to re-confirm this permission. Switching the
+> same entry back on is enough.
 
 Windows needs none of this — see [Windows](#windows).
 
