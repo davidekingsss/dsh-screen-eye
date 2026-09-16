@@ -50,6 +50,12 @@ What they cover:
   the maximum, and that holding a window fixed while raising the interval is
   monotonically fewer frames — which is the cost lever, asserted as a
   monotonicity rather than as one example;
+- the ending contract: that a burst which waited for a change ends when the
+  picture settles without being asked to, that a photograph of the new state
+  and a burst nobody waited for do not, that `until_still: false` restores the
+  full window, that the cap widens to ten only when the caller named neither a
+  count nor a window, and that both endings are described honestly in the
+  envelope the model reads;
 - schema conformance: every shape either tool can return — one capture, a burst,
   a burst that under-delivered, an inventory, an inventory missing a size, and
   each permission outcome — validated against the schema the tool itself
