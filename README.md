@@ -247,9 +247,13 @@ away; [`docs/windows.md`](docs/windows.md) has the measurements.
 - On macOS, Screen Recording permission for the process running the harness
   (see above). Windows needs no grant.
 - A model route that declares image input. With `requireImageCapableModel`
-  left at its default, a text-only route is refused up front with a message
-  naming the model, instead of silently capturing something the model cannot
-  see.
+  left at its default, a route declared text-only is refused up front with a
+  message naming the model, instead of silently capturing something the model
+  cannot see. That declaration lives in the harness's model metadata, not in the
+  model: `settings.yaml` can override a built-in entry, and an override listing
+  only `text` will refuse captures for a model that can see perfectly well. The
+  refusal names the model and the setting, so the fix is one line — and it takes
+  effect without a restart.
 
 ## Development
 

@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-114 cases, all passing, on Windows; 2 of them skip themselves there because they
+116 cases, all passing, on Windows; 2 of them skip themselves there because they
 are about the macOS Screen Recording model. The suite runs without a harness:
 the logic modules are imported directly and the tool definitions are exercised
 through a stubbed context.
@@ -335,6 +335,30 @@ observed there.
   | `region 0,0,320,240`, `frames: 3, interval_ms: 200` | three frames, one engine call, spacing ~200ms |
   | `window` | 3840x2109 — the maximised foreground window, clamped to the desktop |
 
+- **A region really is a crop of the same pixel grid.** A 640x480 capture at
+  (600,400) was compared pixel by pixel against the corresponding rectangle of a
+  3840x2160 capture taken moments earlier: **0 of 307,200 pixels differed**
+  (tolerance 8 per channel). That is the mapping the zoom workflow depends on —
+  what the model measures inside a region is what `region` addresses — and it is
+  now a measurement rather than an inference from matching sizes.
+- **Per-frame cost, by area, inside one engine call** — the number that decides
+  whether a burst can sample motion at all, next to the macOS figures from
+  `motion.md`:
+
+  | captured area | Windows (in a burst) | macOS (per frame) |
+  | --- | --- | --- |
+  | 3840x2160, whole screen | 161 ms | 155 ms |
+  | 1920x1080 | 60 ms | 71 ms |
+  | 1200x800, a component | 29 ms | 56 ms |
+  | 600x400 | 13 ms | 51 ms |
+  | 200x150 | 12 ms | 47 ms |
+
+  Windows matches macOS at full screen and beats it on small regions, because
+  macOS pays about 45ms of process start per frame while a Windows burst pays
+  the PowerShell start once. What Windows cannot match is a *single* call: 0.5s
+  on an idle stretch of the same machine and 1.0-1.5s with other work running,
+  against 47-155ms on macOS. That is the price of having no capture binary to
+  call, and it is why bursts are one process.
 - **DPI is not a detail.** The same panel reported 3072x1728 to a DPI-unaware
   process and 3840x2160 after the shim declared per-monitor-v2 awareness, in that
   order, with the awareness call in between. Windows PowerShell is unaware by
@@ -366,16 +390,15 @@ observed there.
   alike; see section 8.
 - **Timing, measured rather than assumed**: PowerShell start plus `Add-Type`
   about 600ms; a full-screen frame ~150ms (63-82ms to read, 80-86ms to encode);
-  an 800x600 frame ~16ms; a complete single capture 1000-1275ms; the inventory
-  ~510ms. That profile — a fixed cost that dwarfs the frame — is why Windows
-  implements the optional `captureBurst` and takes a whole burst in one process,
-  and the live burst case asserts a spacing under 700ms, which a per-process
-  engine could not reach.
+  an 800x600 frame ~16ms; a complete single capture 0.5-1.5s depending on what
+  else the machine is doing; the inventory ~460ms. That profile — a fixed cost
+  that dwarfs the frame — is why Windows implements the optional `captureBurst`
+  and takes a whole burst in one process, and the live burst case asserts a
+  spacing under 700ms, which a per-process engine could not reach.
 - **The pointer.** `CopyFromScreen` never includes it, so `include_cursor` is a
   claim about a path of this code: the shim draws it with `DrawIconEx` after the
-  copy and reports the call's own result, which the case asserts. The pixels
-  were not compared, because two live captures of the same rectangle differ for
-  other reasons as well.
+  copy and reports the call's own result, which the case asserts. It was also
+  confirmed by eye in the live session below: the arrow is in the picture.
 - **A path that would break the script.** A capture directory named `it's mine`
   is quoted by PowerShell's own rule rather than by hope, asserted as a pure
   case.
@@ -390,12 +413,23 @@ that allows capture); and a visible console window proving that `windowsHide` is
 what prevents it, because the capture ran from a session that already had a
 console.
 
-## 8. Through the real loader, on Windows — and where that stopped
+## 8. Through the real loader, on Windows
 
 The engine cases above run the engine; this run went through the official loader
 and a real agent turn, on the same Windows machine. An isolated profile
 (`verify`) was built from the shipped `headless` template with this checkout
 linked into it, which is the same shape section 2 used on macOS.
+
+The everyday `web` profile was installed the same way, except that `pnpm` could
+not be used for it: adding *any* dependency to that profile re-resolves its
+graph, and an already-installed plugin's peer ranges (`@deepseek-ai/*` at
+`^0.1.5-rc.1`) no longer resolve against the registry's current dist-tags, so
+`pnpm install --lockfile-only` fails there with nothing added at all. The plugin
+was recorded in `package.json` and linked into `node_modules` by hand instead —
+the same two things `pnpm add` would have produced — and the composition and
+resolution were then checked. That is an environment finding rather than a
+plugin one, and it is recorded because the next person to install anything into
+that profile will meet it.
 
 - `dsh --profile verify --dump-config` composed the plugin into the tree with
   `disabled: !!js process.platform !== 'darwin' && process.platform !== 'win32'`
@@ -407,22 +441,96 @@ linked into it, which is the same shape section 2 used on macOS.
   back"* with no tool name and no hint that a capture tool exists. It found
   `screenshot` from the description alone and called it, which is the claim
   section 4 checked on macOS now holding on Windows as well.
-- That call was **refused**, correctly: the only model route configured on this
-  machine (`deepseek-flash`) declares no image input, and the guard said so,
-  naming the model and the setting that lifts it. So a Windows mount also
-  exercises the guard, and its message is the one the model reads.
+- That call was **refused**, correctly, and the refusal is worth reading
+  precisely: the harness's model *metadata* for `deepseek-flash` declared no
+  image input — `settings.yaml` overrode the built-in catalog entry, which does
+  declare `["text","image"]` — and the guard named the model and the setting
+  that lifts it. So a Windows mount also exercises the guard, and its message is
+  the one the model reads. It is a statement about the declaration, not about
+  what the model can do; the difference is what section 8.1 had to unpick.
 - With the guard lifted, the capture ran end to end: a 3840x2160 capture was
   committed to the attachment store — the harness itself reported
   `[image omitted because this model accepts text only; attachment
   sha256:51f02017]` — projected to 2730x1536 for that route, and written to the
   output directory the profile's patch configured.
 
-What this does **not** establish: that a model actually saw the pixels on
-Windows. The only route configured here is text-only, so the last link is
-evidenced by the harness assembling an image block for the request and by the
-macOS runs in sections 3 and 4, not by an agent describing a Windows screen. It
-is an environment limit rather than a property of the port, and it is the same
-limit section 9 records for a text-only route anywhere.
+### 8.1 An agent that can actually see a Windows screen
+
+The run above stopped at the model's doorstep, because the harness's model
+metadata declared no image input. That metadata is a *declaration*, not a
+capability: the built-in catalog for `deepseek-flash` lists `["text","image"]`,
+and this machine's `settings.yaml` overrode the entry with `["text"]`. So the
+last link was tested twice over, in environments where the declaration says what
+the model can do.
+
+**In an isolated `DSH_HOME`** (a copy of the settings with `image` added, so the
+user's own configuration was untouched), a one-shot turn was asked to capture
+the screen and report the taskbar clock. It did, and reported
+`captured_at 2026-09-16T02:35:12.259Z` with `clock 10:35`. This machine is
+UTC+8, so 02:35:12Z *is* 10:35 local: the reading is verifiable against the
+capture's own timestamp rather than taken on trust. It also cropped the capture
+itself with PowerShell to zoom into the clock before answering — the zoom
+workflow from section 3, on the other platform.
+
+**In the real profile.** The plugin was installed into the everyday `web`
+profile and the harness restarted, and the session that is writing this then
+used its own tools. Getting there needed the declaration fixed rather than the
+plugin: `settings.yaml` now lists `image` among `inputModalities` for
+`deepseek-flash`, a one-line change to the user's own configuration (backed up
+first), and it took effect without a further restart — the very next capture
+came back with an image.
+
+- `mode: "displays"` returned `\\.\DISPLAY1 — 3840x2160 at 0,0 (main display)`,
+  the Windows inventory shape with the origin the port added;
+- `mode: "screen"` returned the desktop at 2730x1536 as projected from a
+  native 3840x2160 capture, and the UI was legible: sidebar labels, per-item
+  timestamps ("1分钟", "7小时"), the window title and the model picker;
+- `mode: "region", region: "0,0,860,1340"` came back as an **860x1340 PNG with
+  no downscale at all** — every sidebar label readable, at one pixel of image
+  per pixel of screen. That is the macOS zoom workflow, verified by eye rather
+  than by argument;
+- `include_cursor: true` put the pointer in the picture;
+- `frames: 3, interval_ms: 150` returned three PNGs in one call at 163ms
+  spacing.
+
+The whole tool surface was driven that way, not only the happy paths: the
+inventory, all three burst-planning forms, `window` with the pointer, and the
+refusals for `display 99`, `select`, a region off the desktop and an
+over-large frame count. Every one behaved as `docs/windows.md` says — except
+the two below.
+
+### 8.2 Two things this run found, and what was done about them
+
+Testing through the real tool surface is what surfaced both; neither was
+visible from the engine cases, because both are in the layer the model reads.
+
+1. **A burst that met its target was reported as having missed it.** The sleep
+   loop targets the interval and then starts the next frame, so a burst that met
+   its target still lands a few milliseconds over — and every one of them was
+   labelled *"asked for 150ms, which a capture of this size cannot meet; a
+   smaller region is captured faster"* (measured: 200ms asked, 211ms achieved;
+   150ms asked, 163ms achieved). The advice is about the frame cost, which in
+   those captures was 13-29ms and could not have helped. `formatBurstOutput` now
+   needs a shortfall of more than a quarter of the interval or 25ms before it
+   says the interval was missed; a 40ms request answered with 155ms is still
+   reported, which is the case the sentence exists for.
+2. **A refusal the engine diagnosed was printed twice.** Both engines build
+   their errors as `new CaptureError(detail, { detail })`, so message and detail
+   are the same string, and `describeCaptureFailure` appended one to the other:
+   *"display 99 does not exist: this machine reports 1 display(s): display 99
+   does not exist: this machine reports 1 display(s)"*. The detail is now added
+   only when it says something the message does not already carry, which keeps
+   the two fields useful for the failures where they differ.
+
+Both are shared with macOS — the same two behaviours were wrong there, for the
+same reasons, and a macOS burst that lands 5ms over its interval was being told
+the same untruth. Fixing them in the shared layer keeps the platforms aligned
+rather than aligning Windows to a macOS bug.
+
+One consequence worth recording, because it cost a restart to learn: the running
+harness holds the modules it booted with, so a fix to a message lands on the
+next start, not the next call. The live session above showed the old text until
+the harness was restarted again.
 
 ## 9. What was reasoned about but not executed
 

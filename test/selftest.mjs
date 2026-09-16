@@ -515,6 +515,39 @@ await test('says when the requested interval could not be met', () => {
   assert.match(missed, /a smaller region is captured faster/u);
 });
 
+await test('a burst that met its target is not accused of missing it', () => {
+  // The loop sleeps the remainder of the interval and then starts the frame, so
+  // a burst that met its target still lands a few milliseconds over — which the
+  // first revision reported as "cannot meet", with advice about the frame cost.
+  // Measured on Windows: 200ms asked, 211ms achieved; 150ms asked, 163ms
+  // achieved. Both are the target being met, and the model must be told that.
+  const frame = (n) => ({
+    path: `/tmp/f${n}.png`,
+    capturedAt: 'now',
+    image: { attachmentId: `i${n}`, mediaType: 'image/png', bytes: 1, width: 10, height: 10 },
+  });
+  const cases = [[200, 211], [150, 163], [300, 311], [400, 412], [667, 677], [1000, 1012]];
+  for (const [intervalMs, spacingMs] of cases) {
+    const envelope = formatBurstOutput({
+      mode: 'region', capturedAt: 'now', frames: [frame(1), frame(2)], spacingMs, intervalMs,
+    });
+    assert.doesNotMatch(
+      envelope,
+      /cannot meet/u,
+      `${intervalMs}ms asked and ${spacingMs}ms achieved must not be reported as a miss`,
+    );
+    assert.match(envelope, new RegExp(`about ${spacingMs}ms apart`, 'u'));
+  }
+  // And the tolerance is a tolerance, not a mute button: a shortfall outside it
+  // is still reported, because that is the feedback the next call needs.
+  for (const [intervalMs, spacingMs] of [[150, 400], [200, 1000], [40, 155]]) {
+    const envelope = formatBurstOutput({
+      mode: 'region', capturedAt: 'now', frames: [frame(1), frame(2)], spacingMs, intervalMs,
+    });
+    assert.match(envelope, /cannot meet/u, `${intervalMs}ms asked and ${spacingMs}ms achieved is a miss`);
+  }
+});
+
 await test('a single capture keeps its original one-image shape', () => {
   const blocks = imageContent({
     path: '/tmp/a.png',
@@ -1209,6 +1242,29 @@ await test('a refused capture names what refused it, on a platform that has no g
   const message = describeCaptureFailure(refused).message;
   assert.match(message, /display 99 does not exist/u);
   assert.doesNotMatch(message, /Screen Recording/u);
+});
+
+await test('a failure the engine reported is not repeated twice', () => {
+  // Both engines build their errors as `new CaptureError(detail, { detail })`,
+  // so message and detail are the same string for every failure the engine
+  // itself diagnosed. Appending one to the other produced
+  // `display 99 does not exist: display 99 does not exist`, which reads like a
+  // malfunction in the plugin rather than a fact about the screen.
+  const engineSaid = new CaptureError('region -9000,-9000,100,100 does not overlap any display', {
+    kind: 'region-outside-desktop',
+    detail: 'region -9000,-9000,100,100 does not overlap any display',
+  });
+  const message = describeCaptureFailure(engineSaid).message;
+  assert.equal(message, 'region -9000,-9000,100,100 does not overlap any display');
+  assert.equal(message.match(/does not overlap/gu).length, 1);
+
+  // A detail that adds something is still added: that is what makes the two
+  // fields worth having separately.
+  const withDetail = new CaptureError('the engine exited with code 1', {
+    kind: 'capture-failed',
+    detail: 'Access is denied',
+  });
+  assert.equal(describeCaptureFailure(withDetail).message, 'the engine exited with code 1: Access is denied');
 });
 
 await test('an error that is not a capture failure is passed through untouched', () => {

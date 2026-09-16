@@ -169,8 +169,8 @@ Measured on the 3840x2160 machine:
 | PowerShell start, `Add-Type`, assemblies | ~600ms, once per engine call |
 | a frame at full screen (3840x2160) | ~150ms (63-82ms to read, 80-86ms to encode) |
 | a frame at 800x600 | ~16ms |
-| a complete single capture | 1200ms full screen, 1000ms for a 640x480 region |
-| the display inventory | ~510ms |
+| a complete single capture | 0.5s on an idle machine, 1.0-1.5s with other work running |
+| the display inventory | ~460ms |
 
 So a single capture costs about a second whatever it captures, and the area
 barely matters. That is the opposite of the macOS profile, where a capture is
@@ -186,6 +186,12 @@ spaced by the plan's interval. A six-frame burst of an 800x600 region costs
 about 0.7s instead of 6s, and the interval the tool advertises becomes
 reachable. The self-test asserts the spacing stays under 700ms on Windows, which
 a per-frame process could not do.
+
+Inside that loop a frame costs what the area costs, and the figures land beside
+macOS's rather than behind them — 161ms for a 4K frame against macOS's 155ms,
+and 12-29ms for the small regions against 47-56ms, because macOS pays its ~45ms
+of process start per frame while a Windows burst pays the PowerShell start once.
+`docs/verification.md` has the full table next to the macOS numbers.
 
 ## What was measured, and what was not
 
@@ -207,17 +213,31 @@ writing this:
 - the plugin through the **official loader**: an isolated profile with this
   checkout linked in, the gate composed and open, an agent that found the tool
   from its description alone and called it, the image-capability guard refusing
-  a text-only route with the model named, and — with the guard lifted — a
-  3840x2160 capture committed to the attachment store and written to the
+  a route declared text-only with the model named, and — with the guard lifted —
+  a 3840x2160 capture committed to the attachment store and written to the
   configured directory;
-- `include_cursor`, whose draw is confirmed by the Win32 call's own result.
+- **the whole loop, with a model that can see.** An agent turn was asked for the
+  taskbar clock; it reported `clock 10:35` beside the capture's own
+  `captured_at 2026-09-16T02:35:12.259Z`, and this machine is UTC+8, so the two
+  agree — a reading that can be checked against the timestamp rather than
+  believed. It cropped the capture itself before answering, which is the zoom
+  workflow;
+- **in the everyday profile, after a restart**: the tool mounted, the inventory
+  came back with the display origin, the desktop arrived at the route's
+  projection of a native 4K capture with the UI legible, an 860x1340 region came
+  back as a PNG with **no downscale at all** and every sidebar label readable,
+  `include_cursor` put the pointer in the picture, and a three-frame burst
+  returned three images in one call;
+- **the coordinate mapping, as pixels**: a 640x480 region at (600,400) compared
+  against the matching rectangle of a full 4K capture differed in **0 of 307,200
+  pixels**;
+- `include_cursor`, whose draw is confirmed by the Win32 call's own result and
+  was then confirmed by eye;
+- per-frame cost by area inside a burst, beside the macOS figures — 161ms at 4K
+  against macOS's 155ms, 12-29ms at component sizes against 47-56ms.
 
 Not verified, and named here rather than implied away:
 
-- **A model actually seeing a Windows screen.** The only route configured on
-  this machine declares text-only input, so the last link is evidenced by the
-  harness assembling an image block for the request rather than by an agent
-  describing what it saw. The macOS runs in `verification.md` cover that link.
 - **A second display.** The machine has one. The ordering rule (main first,
   1-based) is asserted as a pure function against a two-display payload, and the
   index round trip is asserted for index 1 only, so the "does `display 2` really
