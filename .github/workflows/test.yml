@@ -8,16 +8,21 @@ name: test
 #
 # Both platforms the plugin serves are tested, because the point of the seam is
 # that one of them can be changed without the other noticing — and that claim is
-# only worth anything if something checks the other one afterwards. The Windows
-# job runs the whole suite, including the cases that build and assert the
-# Windows engine's PowerShell without running it: those execute on macOS too,
-# and the live captures skip themselves on a runner with no interactive
-# desktop, which is what a hosted CI machine is.
+# only worth anything if something checks the other one afterwards. Each job runs
+# the whole suite: the cases that assert a platform's own engine as a pure
+# mapping execute everywhere, and the ones that need a real screen skip
+# themselves on a hosted runner, which has no interactive desktop.
 #
 # The versions are pinned exactly and deliberately. These packages publish the
 # current line under the `next` dist-tag, and their `latest` tag still points at
 # a much older release: an unpinned install silently resolves to the old one and
 # the import fails.
+#
+# The macOS job also compiles the resident helper, because the suite asserts that
+# it builds and that the rectangle it is asked for is the one `screencapture` is
+# asked for. A runner with no Swift toolchain skips that case rather than
+# failing, which is the same degradation the plugin itself performs — so a green
+# macOS job with a skip there is worth reading rather than assuming.
 
 on:
   push:

@@ -128,6 +128,16 @@ its ~45ms of process start per frame:
 | 600x400 | 13ms | 51ms |
 | 200x150 | 12ms | 47ms |
 
+Those macOS figures are the ones this page carried as estimates. They were
+measured on a 3840x2160 panel on 2026-09-16 and hold: a 1920x1080 frame is
+**67.9ms**, a 1200x800 one **55.8ms** and a 400x300 one **47.7ms**, which is the
+same shape — a fixed cost of about 45ms plus the encoding. What the same run also
+measured is macOS's resident helper, which removes the fixed cost: the same
+frames come back in **29.2ms**, **18.4ms** and **13.2ms**. So the "macOS pays its
+~45ms of process start per frame" sentence above is a statement about
+`screencapture`, not about the platform, and a warm macOS is closer to Windows in
+a burst than this table shows. `docs/macos-findings.md` has the full set.
+
 ### The interval floor, asked for and achieved
 
 `interval_ms` is a target, and what a burst achieves is `max(target, frame cost)`
@@ -238,14 +248,27 @@ for two consecutive checks. A 60px block crossing a 1300x600 region moves about
 0.8% of the points; a cursor is worth about 0.1%. The threshold sits between them
 because that is the only place it can sit.
 
-macOS has the same wait, with a weaker instrument. It has no resident helper to
-ask, so each check runs `screencapture` and compares the bytes with their
-descriptive chunks stripped — 47ms for a component-sized region against the
-engine's 18ms — and it can only answer "something moved", which is why the
-confirmation count exists. The maths still works out: a 47ms check plus one
-confirmation puts the first frame inside 150ms of the change, leaving four or
-five frames of a 300ms transition. Without the wait, macOS is in the same
-position as Windows: a call issued 300ms late gets nothing.
+macOS has the same wait, and it used to be the weaker one: with no helper to ask,
+each check ran `screencapture` and compared the bytes with their descriptive
+chunks stripped — 47ms for a component-sized region against the engine's 18ms —
+and it could only answer "something moved", which is why the confirmation count
+exists. That was measured on 2026-09-16 and the arithmetic did **not** work out.
+A check on a component-sized region costs 56-90ms per poll cycle rather than 47ms,
+and a change must be confirmed twice, so a burst watching a 300ms transition
+recorded its **last third**: of 373px of travel the returned frames covered
+24-98px, which is one or two motion frames out of five or six captured. The
+earlier claim here — that this "leaves four or five frames of a 300ms transition"
+— assumed the confirmation and the first frame were free. Both cost a full check.
+
+So macOS has a resident helper too, for exactly the reason Windows does. Apple
+obsoleted `CGDisplayCreateImage` in macOS 15, so ScreenCaptureKit is the only
+supported route to the screen and it needs a compiled program; the helper is built
+from source on the user's machine on first use and inherits the harness's Screen
+Recording grant, so it costs no second prompt. Resident, a change check is
+**22.6ms** and a 400x300 frame **13.2ms** against 47.7ms, and the same watched
+transition is covered over **270-348px** instead of 24-98px. `screencapture`
+remains the engine of record and every failure except a denial falls back to it.
+`docs/macos-findings.md` has the measurements.
 
 The wait gives up rather than guessing. If nothing moves for `wait_timeout_ms`
 (thirty seconds by default, because the user has to read that something is

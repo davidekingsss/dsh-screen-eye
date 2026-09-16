@@ -35,7 +35,15 @@ import {
   planCapture,
 } from '../lib/capture.mjs';
 import { describeCaptureFailure, isSupportedPlatform, platformFor, supportedPlatforms } from '../lib/platform.mjs';
-import { darwin, screencaptureArgs } from '../lib/platform/darwin.mjs';
+import { darwin, engineTarget, screencaptureArgs } from '../lib/platform/darwin.mjs';
+import {
+  buildEngine,
+  compilerCommand,
+  engineBinaryPath,
+  engineIsWarm,
+  engineSource,
+  stopEngine,
+} from '../lib/platform/darwin/engine.mjs';
 import {
   BLACK_FRAME_PERMILLE,
   NO_SESSION,
@@ -1215,15 +1223,21 @@ await test('the description tells the model what this platform actually does', a
   assert.doesNotMatch(macos.description, /no screen-recording permission to grant/u);
   // And the macOS description is still the macOS one, word for word where it
   // states a measurement: the port is allowed to add a platform, not to change
-  // what the other one promises. The 155ms and 56ms figures are the macOS
-  // measurements, and a Windows one has no business carrying them.
+  // what the other one promises. The macOS figures are the macOS measurements,
+  // and a Windows one has no business carrying them.
   assert.match(macos.description, /^Capture this macOS screen and return the picture itself/u);
-  assert.match(macos.parameters, /155ms for a full screen but 56ms for a 1200x800 region/u);
+  assert.match(macos.parameters, /a 1200x800 region costs about 56ms and a full screen about 155ms/u);
   assert.match(macos.parameters, /"window" and "select" are interactive/u);
+  // macOS now has a resident helper too, and says so — but it says it in its own
+  // words, because the claim is different: Windows takes a whole burst in one
+  // engine process, while macOS keeps a helper warm and still drives its frames
+  // through the shared loop.
+  assert.match(macos.parameters, /resident helper warm/u);
+  assert.doesNotMatch(macos.parameters, /a burst runs in one engine process/u);
   // The Windows briefing says what a burst can actually do there, which is the
   // one thing a model about to ask for a 100ms interval needs to know.
   assert.match(windows.parameters, /a burst runs in one engine process/u);
-  assert.doesNotMatch(macos.parameters, /one engine process/u);
+  assert.doesNotMatch(windows.parameters, /resident helper/u);
 });
 
 await test('refuses to capture for a model that cannot see images', async () => {
@@ -1359,6 +1373,107 @@ await test('the guide never reports a state it did not observe', async (skip) =>
     const [block] = tool.output.render({}, value);
     assert.match(block.text, /call this tool with action "check" to confirm/u);
   }
+});
+
+await test('the macOS engine is asked for the same rectangle screencapture is', () => {
+  // The one thing both engines have to agree on, and the one thing whose
+  // failure is silent: a request mapped onto the wrong rectangle returns a
+  // perfectly plausible picture of the wrong place. An earlier revision read
+  // `plan.origin` and `plan.size`, which a capture plan does not have, so every
+  // field was `undefined` and a region returned a 4K image of the whole
+  // desktop — which no assertion about a region's *existence* would have
+  // caught. So this asserts the numbers, mode by mode, against the flags the
+  // binary is handed for the same plan.
+  const cases = [
+    [{ mode: 'screen' }, { display: 1, x: 0, y: 0, width: 0, height: 0 }],
+    [{ mode: 'display', display: 2 }, { display: 2, x: 0, y: 0, width: 0, height: 0 }],
+    [{ mode: 'region', region: '200,200,400,300' }, { display: 1, x: 200, y: 200, width: 400, height: 300 }],
+    // A negative origin is how a display left of the main one is addressed, and
+    // it has to survive the mapping rather than be clamped to zero.
+    [{ mode: 'region', region: '-1920,0,800,600' }, { display: 1, x: -1920, y: 0, width: 800, height: 600 }],
+  ];
+  for (const [args, expected] of cases) {
+    const plan = planCapture(args);
+    const target = engineTarget(plan);
+    assert.deepEqual(
+      { display: target.display, x: target.x, y: target.y, width: target.width, height: target.height },
+      expected,
+      `${args.mode}: the engine was asked for the wrong rectangle`,
+    );
+    // And the binary's own mapping has to describe the same rectangle, or the
+    // fallback would capture something else than the engine it stands in for.
+    const flags = screencaptureArgs(plan, '/tmp/x.png');
+    if (expected.width > 0) {
+      assert.ok(flags.includes(`${expected.x},${expected.y},${expected.width},${expected.height}`),
+        `${args.mode}: screencapture is not asked for the same rectangle`);
+    } else if (args.mode === 'display') {
+      assert.deepEqual(flags.slice(flags.indexOf('-D'), flags.indexOf('-D') + 2), ['-D', '2']);
+    } else {
+      assert.ok(flags.includes('-m'), 'mode screen must pin screencapture to one display');
+    }
+  }
+  // The cursor is a field the engine carries rather than a flag it appends.
+  assert.equal(engineTarget(planCapture({ mode: 'region', region: '0,0,10,10', include_cursor: true })).cursor, true);
+  assert.equal(engineTarget(planCapture({ mode: 'region', region: '0,0,10,10' })).cursor, false);
+
+  // "displays" is the inventory: it captures nothing, so nothing about it may
+  // reach a capture engine — and the inventory path must not be turned into a
+  // request for a rectangle it never asked for.
+  const inventory = planCapture({ mode: 'displays' });
+  assert.equal(inventory.frames, 1);
+  assert.equal(inventory.region, undefined);
+  assert.equal(engineTarget(inventory).width, 0, 'the inventory asks the engine for no rectangle');
+});
+
+await test('the engine source obeys the protocol the host parses', async () => {
+  // The helper is compiled from this file on the user's machine, so its source
+  // has no compiler check between it and a user. Two things in it are contract
+  // rather than implementation: the readiness line the host waits for, and the
+  // fact that a reply carries the request's own id — without which two
+  // outstanding requests cannot be told apart. The rectangles and the hashing
+  // are asserted by the live cases above, which is the only place they can be.
+  const source = await engineSource();
+  assert.match(source, /"ready": true|"ready":true/u, 'the host waits for a ready line it must be able to recognise');
+  assert.match(source, /"id": request\.id/u, 'every reply must carry the id it answers');
+  assert.match(source, /readLine\(strippingNewline: true\)/u, 'the loop reads one request per line');
+  // The reduction size is what makes a check cheap, and it is a decision two
+  // files depend on: the engine draws into it, the docs describe it.
+  assert.match(source, /size: 64|64 \* 64/u, 'the fingerprint is a 64x64 reduction');
+  assert.match(source, /SCScreenshotManager\.captureImage/u, 'the capture goes through ScreenCaptureKit');
+  assert.match(source, /showsCursor/u, 'the cursor is a field of the capture configuration');
+  // `CGDisplayCreateImage` is obsoleted in macOS 15 and would not compile
+  // against a current SDK; reaching for it again is the mistake this prevents.
+  assert.doesNotMatch(source, /CGDisplayCreateImage/u, 'the obsoleted capture API is not coming back');
+});
+
+await test('the engine binary is cached by source, and a cold engine costs nothing', async (skip) => {
+  // Two claims, both about the lifecycle rather than the capture. First, that
+  // the helper is named after its own source, so a changed helper is a
+  // different file and a stale build can never be mistaken for a current one.
+  const source = await engineSource();
+  const path = engineBinaryPath(source);
+  assert.equal(engineBinaryPath(source), path, 'the same source must build to the same path');
+  assert.notEqual(engineBinaryPath(`${source}\n// a change`), path, 'a changed helper gets its own file');
+  assert.match(path, /dsh-screen-eye-engine[\\/]engine-[0-9a-f]{16}$/u);
+  assert.ok(!path.includes('%20'), 'the path must not carry URL escaping, which is how the first build failed');
+
+  // Second, that asking whether an engine is warm neither starts one nor
+  // reports one. The compile is invisible to a caller by design: the first
+  // capture is served by `screencapture` and the helper is built behind it.
+  stopEngine();
+  assert.equal(engineIsWarm(), false, 'a stopped engine is not warm');
+
+  // The build step itself is only meaningful where there is a compiler, and on
+  // a machine without one the plugin has to keep working — which is what the
+  // `null` return means. Skipped where there is no toolchain rather than
+  // asserted away, because the CI runner is exactly such a machine.
+  if (compilerCommand() === null) {
+    skip('no Swift toolchain on this machine, so there is no helper to build');
+    return;
+  }
+  const built = await buildEngine();
+  assert.ok(typeof built === 'string' && built.endsWith(path.split('/').at(-1)), `expected the helper at ${path}`);
+  assert.equal(await buildEngine(), built, 'a second build reuses the first');
 });
 
 await test('renders the settings-opened outcome without claiming authorisation', () => {
@@ -1514,6 +1629,28 @@ if (!live.ok) {
     const value = await tool.execute({ mode: 'region', region: '0,0,320,240' }, stubExec());
     assert.equal(value.mode, 'region');
     assert.equal(attachments.saved.length, 1);
+  });
+
+  await test('a machine with no helper still captures, through screencapture', async () => {
+    // The resident engine is an optimisation on top of `screencapture`, never a
+    // dependency in place of it, and the machine it matters for is one with no
+    // Swift toolchain — where `buildEngine` returns `null`. The claim to check
+    // is that the plugin then degrades to exactly its old behaviour rather than
+    // to a capture that does not happen, which is the whole difference between
+    // an optimisation and a dependency.
+    //
+    // Driven with the engine genuinely stopped, so this exercises the real
+    // fallback rather than a stubbed one: what proves the fallback works is a
+    // capture taken while there is nothing resident to take it through.
+    stopEngine();
+    assert.equal(engineIsWarm(), false, 'this case is only meaningful with no engine running');
+
+    const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+    const value = await tool.execute({ mode: 'region', region: '0,0,120,90' }, stubExec());
+    assert.match(value.path, /\.png$/u);
+    const size = pngDimensions(await readFile(value.path));
+    assert.equal(size.width, 120, 'with no engine running the binary still honours the region');
+    assert.equal(size.height, 90);
   });
 
   await test('prunes old captures before a call, so a burst never eats its own frames', async () => {
@@ -1947,6 +2084,17 @@ if (!live.ok) {
       );
     });
 
+    await test('a one-shot script a real PowerShell is handed actually runs', async () => {
+      // The other half of the case above, and the half that needs this machine:
+      // the file it writes is spelled right everywhere, and is only *executable*
+      // where the engine it targets exists. Without this, a BOM or an encoding
+      // mistake would leave a script whose file is perfect and which PowerShell
+      // nevertheless refuses — which is exactly the class of failure the
+      // `-EncodedCommand` removal was meant to end.
+      const parsed = await runOneShot(captureScript(planCapture({ mode: 'screen' }), 'C:\\a.png'));
+      assert.equal(parsed.ok, true, 'a one-shot script has to actually run');
+    });
+
     await test('refuses mode "select" by name rather than capturing something else', async () => {
       const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
       await assert.rejects(
@@ -2235,13 +2383,15 @@ await test('a one-shot script travels as a file, and the file is usable', async 
   assert.equal(runScriptPath(script), path, 'the name is a function of the script alone');
   assert.notEqual(runScriptPath(`${script} `), path, 'and a changed script gets its own file');
 
-  // Written by running one, then read back: what PowerShell will be handed is
-  // what was asserted, byte for byte after the BOM.
+  // What PowerShell will be handed is read back off the disk. Written by asking
+  // for a run — which writes the file before it looks for PowerShell, so this
+  // half holds on a machine that has none, and therefore on CI's macOS job —
+  // and then thrown away, because how the file is spelled is what this case is
+  // about. That it *runs* is the next case's job, and that one is Windows-only.
   const dir = await mkdtemp(join(tmpdir(), 'dsh-eye-oneshot-'));
   try {
     const real = captureScript(planCapture({ mode: 'region', region: '0,0,32,24' }), join(dir, 'a.png'));
-    const parsed = await runOneShot(real);
-    assert.equal(parsed.ok, true, 'a one-shot script has to actually run');
+    await runOneShot(real).catch(() => {});
     const onDisk = await readFile(runScriptPath(real), 'utf8');
     assert.equal(onDisk.charCodeAt(0), 0xFEFF, 'the BOM is what makes it readable as UTF-8');
     assert.equal(onDisk.slice(1), real);

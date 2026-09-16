@@ -7,11 +7,16 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-135 cases: 133 pass on Windows and 2 skip themselves there, because they are
-about the macOS Screen Recording model. On macOS all 135 run. The suite runs
-without a harness: the logic modules are imported directly, the tool definitions
-are exercised through a stubbed context, and the browser half is loaded the way
-the harness loads it — as a classic script — and rendered by a stand-in React.
+136 cases, 130 of which run on macOS and 126 on Windows. The two blocks that do
+not run everywhere are the ones about a machine rather than about a system: 10
+cases take live captures and skip themselves off Windows, and 10 assert the
+Windows engine against a real PowerShell and never run off Windows. So macOS
+executes 116 shared cases plus its 10 live ones, and Windows executes the 116
+plus its own 10 — which is why a count is quoted per platform rather than once.
+The suite runs without a harness: the logic modules are imported directly, the
+tool definitions are exercised through a stubbed context, and the browser half is
+loaded the way the harness loads it — as a classic script — and rendered by a
+stand-in React.
 
 It runs on both platforms the plugin serves, and CI runs it on both. Cases that
 are about a platform's own model — the macOS permission classification, the
@@ -175,7 +180,21 @@ What they cover:
 - that a frame carrying a note still satisfies the declared output schema and
   still renders its image — the note rides beside the picture in the envelope —
   and that a capture without one renders exactly as it did before the field
-  existed.
+  existed;
+- **the macOS resident engine**, which is the newest part of the plugin and the
+  one with the most ways to be quietly wrong: that the rectangle it is asked for
+  is the rectangle `screencapture` is asked for, mode by mode and including a
+  negative origin, asserted as numbers rather than as "a region was requested" —
+  because an earlier revision read fields a capture plan does not have and every
+  region silently returned a 4K image of the whole desktop, which no test of the
+  *existence* of a region could have caught; that the helper's source still
+  obeys the protocol the host parses (the readiness line, the request id on every
+  reply, the 64x64 reduction, and no return of `CGDisplayCreateImage`, which is
+  obsoleted in macOS 15); that the binary is named after a hash of its own source,
+  so a changed helper cannot be mistaken for a current one and the build path
+  carries no URL escaping; and that a machine with no Swift toolchain degrades to
+  a real capture through `screencapture` with the engine stopped, which is the
+  difference between an optimisation and a dependency.
 
 Cases that capture for real run only when the machine can actually see its own
 screen — on macOS that means Screen Recording is granted, on Windows that the
@@ -800,31 +819,83 @@ over a 600x400 region, asked for at a 20ms interval, came back as **30 frames at
 The cap it replaced would have stopped at ten frames and 290ms — a third of the
 motion, and, worse, a third chosen by the plugin rather than by the caller.
 
-## 9. What was reasoned about but not executed
-- **The macOS half of every recent change.** `watch`/`changed`, the still ending
-  and the shared budget are implemented for macOS and have never been executed
-  there — there is no Mac on this machine. `docs/macos-debugging.md` is the
-  runbook written for the agent that will run them, in priority order, with what
-  each measurement means; the load-bearing assumption it starts with is that two
-  `screencapture` outputs of an unchanged rectangle are byte-identical once their
-  descriptive chunks are stripped, because the still check hashes rather than
-  samples.
+## 9. macOS, actually exercised
+
+The section that used to stand here said the macOS half of `watch`/`changed`, the
+still ending and the shared budget had "never been executed — there is no Mac on
+this machine". There is one now, and `docs/macos-debugging.md` was run against it
+end to end. `docs/macos-findings.md` is the full record; in short:
+
+- **the suite is green on macOS**: 130 passed, 0 failed, 0 skipped, after fixing a
+  case that could only ever have passed on Windows (see below);
+- **a region is an exact crop of the same pixel grid** — 0 of 360,000 channels
+  differ from the matching crop of a full capture;
+- **the still check's load-bearing assumption holds, and more strongly than
+  claimed**: two `screencapture` outputs of an unchanged rectangle are
+  byte-identical on macOS 26.6.2 even *before* their descriptive chunks are
+  stripped, across three rectangle sizes. The stripping stays as insurance, not
+  as the mechanism;
+- **the still ending works**: a plan asking for 8 frames ended at 3 with
+  `endedBecause: "still"`;
+- **the wait does not catch the animations it was written for.** Measured against
+  the plugin's own fixture, a 300ms transition with 373px of travel is covered by
+  the returned frames over just **24-98px** — one or two motion frames, the tail
+  rather than the beginning — because a change check costs a whole `screencapture`
+  (56-90ms per poll on a component region) and a change must be confirmed twice.
+  `docs/motion.md`'s claim that this "leaves four or five frames of a 300ms
+  transition" is contradicted by the measurement;
+- **both interactive modes cancel with a misleading message**, reporting
+  *"screencapture reported success but wrote no file"* when the user pressed
+  Escape — the same sentence a genuinely empty capture produces. Recorded, not
+  yet fixed;
+- **macOS now has a resident engine.** Apple obsoleted `CGDisplayCreateImage` in
+  macOS 15, so ScreenCaptureKit is the only supported route and it needs a
+  compiled program. A Swift helper compiled on this machine inherits the
+  terminal's Screen Recording grant with no second prompt, and changes a
+  component-region frame from 47.7ms to **13.2ms**, a change check from 55.8ms to
+  **22.6ms**, and a watched 300ms animation from **24-98px of travel covered to
+  270-348px**. Compiling it costs 0.54-1.1s, once, behind the first capture. It is
+  an optimisation over `screencapture`, never a replacement: every failure except
+  a Screen Recording denial falls back to the binary.
+
+Two defects this run found, both fixed:
+
+1. `runScript` in `lib/platform/win32.mjs` checked for `powershell.exe` before
+   writing the script file, so the case asserting that file's contents and BOM
+   failed on macOS — the platform it is portable *to*. The write now precedes the
+   host check, and the half that needs a real PowerShell moved into the
+   Windows-only block.
+2. The engine's build passed `URL.pathname` to `swiftc`, which leaves
+   percent-encoding in place: a checkout under a directory with a space in its
+   name handed the compiler a path containing `%20`. `fileURLToPath` fixes it.
+
+## 10. What was reasoned about but not executed
 - **A burst at the 600-frame ceiling.** The limit is the provider's and the
   refusal is tested, but a 600-frame call has never been run: at 4K and a 155ms
   frame it is a minute and a half of capture and several gigabytes of PNG, and
   the number is there as a ceiling for the caller's judgement rather than as a
   shape this plugin recommends.
-- **The client-side settings surface.** None is shipped in this version, so
-  there is no browser UI to verify.
 - **A model without image input.** Refused up front; verified by self-test with
   a stubbed route, not against a real text-only model.
 - **Retention over a long run.** The rule and its file-level behaviour are
   tested; that the default cap of 50 is the right number is a judgement, not a
   measurement.
-- **`window` and `select` on macOS.** Interactive by design, so no automated
-  case can complete them; the flag mapping is asserted and nothing more is
-  claimed. On Windows `window` is not interactive and is exercised for real,
-  while `select` is refused by design.
+- **`window` and `select` on macOS.** Interactive by design, so no automated case
+  can complete them; the flag mapping is asserted and nothing more is claimed,
+  and this run only ever cancelled them. On Windows `window` is not interactive
+  and is exercised for real, while `select` is refused by design.
+- **A live Screen Recording denial on macOS.** The grant on the development
+  machine belongs to the terminal running the session, so revoking it mid-run
+  would have ended the session doing the measuring. The classification, the
+  onboarding text and the grant target are asserted; a real denial is not.
+- **The resident engine under a harness started by launchd**, rather than by a
+  terminal. The mechanism it relies on — a child being attributed to its
+  responsible parent for TCC purposes — is verified from a terminal-spawned
+  parent, which is how this harness runs; a launchd-started one is the case where
+  that attribution may differ, and it is the one worth checking next.
+- **Multi-display and Retina on macOS.** The development machine has one display
+  at 1x. Negative origins, a second screen and mixed scaling are reasoned about
+  and asserted as pure functions, and were measured on Windows, but not here.
 - **Attachment-store rejection.** `saveImage` can refuse an image that exceeds
   the deployment's limits (8192 px per side, 64 megapixels, 20 MB by default).
   A single display cannot reach those — the default capture is one display

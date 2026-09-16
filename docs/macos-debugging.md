@@ -3,7 +3,10 @@
 **给用户的摘要（中文）**：这份文档是写给 Mac 上那个 AI 的，它不需要任何上下文就能照做。
 打开 `docs/macos-debugging.md`，让它从"Step 0"开始逐项执行，把每项的结果按最后的模板回报。
 里面每一项都写了**怎么跑、期望看到什么、出现了偏差意味着什么**，以及要回报哪些数字。
-Windows 端的全部实测已经完成，Mac 端唯一完全没跑过的是"变化检测"和"静止判定"这两条新路径。
+2026-09-16 这份 runbook 已在 macOS 26.6.2 / Apple M4 上完整跑过一遍，结果记在
+`docs/macos-findings.md`：测试全绿，坐标映射是精确裁剪，静止判定的前提成立；
+但"等待变化"实测只抓到 300ms 动画的尾巴，因此 macOS 也补上了常驻引擎
+（ScreenCaptureKit，继承授权，无需二次授权弹窗）。
 
 This document is written for an agent that has just been handed the repository and
 has no memory of how it got here. Everything it needs is below; nothing depends on
@@ -34,10 +37,11 @@ for a change).
 node test/selftest.mjs
 ```
 
-Expect **135 passed, 0 failed, 0 skipped**. Nothing skips on macOS: the two cases
-that skip on Windows are the ones about TCC denial and onboarding guidance, and
-they must execute here. If the suite is not green, stop and report the failure —
-nothing below is worth measuring on top of a broken build.
+Expect **130 passed, 0 failed, 0 skipped**. Nothing skips on macOS: the cases
+that never run there are the ten about a real Windows PowerShell, and the two
+that skip themselves *on Windows* are the ones about TCC denial and onboarding
+guidance, which must execute here. If the suite is not green, stop and report the
+failure — nothing below is worth measuring on top of a broken build.
 
 Report: the exact pass/fail/skip counts, and the output of `node --version`,
 `sw_vers`, and `system_profiler SPDisplaysDataType | head -40`.
@@ -94,11 +98,12 @@ crop, and the `displays` output.
 ## Step 3 — **the one that matters most**: does a still picture read as still?
 
 Windows answers "has it stopped?" by sampling a few thousand pixels and asking how
-many moved. macOS has no resident helper, so it answers by capturing the rectangle
-and comparing **sha256 of the PNG with its descriptive chunks stripped**
-(`lib/platform/darwin.mjs`, `sampleScreen`). That is an all-or-nothing comparison,
-and it can only work if two captures of an unchanged screen produce *identical*
-bytes after `stripDescriptiveChunks`.
+many moved. macOS answers through whichever of its two engines is available: the
+resident helper reduces the rectangle to a 64x64 fingerprint in process, and
+failing that it captures the rectangle and compares **sha256 of the PNG with its
+descriptive chunks stripped** (`lib/platform/darwin.mjs`, `sampleScreen`). Both
+are all-or-nothing comparisons, and the byte one can only work if two captures of
+an unchanged screen produce *identical* bytes after `stripDescriptiveChunks`.
 
 That is the assumption to test, because if it is wrong the burst never sees a still
 frame, never ends early, and quietly runs to its frame ceiling instead:
@@ -191,7 +196,7 @@ What to record, and why each number matters:
 | frames inside the 300ms of movement | whether the motion is resolvable at all — 4-5 is enough to read direction, distance and easing | 4-5 of 7-8 |
 | `endedBecause` | whether the burst ended on the motion or ran out its ceiling | `still` after 7 frames |
 | achieved `spacing` vs the 40ms asked for | macOS pays a process start per frame; the floor is the real limit on resolution | 48-56ms |
-| `screencapture` processes alive during the wait | the polling cost is the price of having no resident helper | n/a — 18ms in-process check |
+| `screencapture` processes alive during the wait | the polling cost is the price of not having a helper warm; with one, there are none | n/a — 18ms in-process check |
 
 Then the false-trigger check, which is the other half of the wait's design: point a
 `wait_for_change` burst at a rectangle that is **not** changing — a blank area, the
@@ -263,7 +268,7 @@ chat message, and structure it as:
 # macOS findings — <date>, <macOS version>, <hardware>
 
 ## Suite
-135 passed, 0 failed, 0 skipped.
+130 passed, 0 failed, 0 skipped.
 
 ## Step 3 — still detection (the load-bearing assumption)
 stripped equal: <true|false>; raw equal: <true|false>
@@ -296,13 +301,23 @@ measurement that disagrees with one is the most valuable thing this run can prod
 
 ## What is already known, so you do not re-derive it
 
-- The macOS capture path is **unchanged** from the plugin's first version except for
-  the additions described in `docs/motion.md`: the wait (`watch`/`changed`), the
-  still ending, and the shared budget. If a plain single capture behaves differently
-  from the published plugin, that is a regression and outranks everything here.
-- There is no `captureBurst` on macOS — the shared per-frame loop in
-  `lib/capture.mjs` is used — because there is no resident process to amortise. That
-  is a deliberate difference from Windows, not a gap.
+- The macOS capture path is the same as the plugin's first version, with the
+  additions described in `docs/motion.md` — the wait (`watch`/`changed`), the still
+  ending and the shared budget — plus the resident engine below. If a plain single
+  capture behaves differently from the published plugin, that is a regression and
+  outranks everything here.
+- There is still no `captureBurst` on macOS: the shared per-frame loop in
+  `lib/capture.mjs` is used, because a frame through the resident helper is cheap
+  enough that amortising it inside one engine call buys nothing. That is a
+  deliberate difference from Windows rather than a gap — and it means the ending
+  logic (`until_still`) stays in the shared loop on both platforms.
+- macOS also keeps a resident helper, since 2026-09-16. It is a Swift program
+  built from `lib/platform/darwin/engine.swift` on first use (0.54-1.1s, behind
+  the first capture, never in front of it), cached under the temporary directory
+  by a hash of its own source, and used only when it is already warm. It inherits
+  this process's Screen Recording grant, so it needs no second grant — and
+  `screencapture` remains the engine of record, with any failure other than a
+  denial falling back to it.
 - Windows keeps a PowerShell engine resident and answers a change check in 18ms; the
   numbers in the tables in `docs/motion.md` labelled Windows were all measured on one
   3840x2160 machine at 125% scaling with a second screen at x = -2560.

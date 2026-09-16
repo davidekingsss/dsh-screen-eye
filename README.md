@@ -267,7 +267,10 @@ away; [`docs/windows.md`](docs/windows.md) has the measurements.
   `wait_for_change: true` is the answer: "I am watching this rectangle; take the
   frames from the moment it moves." On a known 300ms transition the frames began
   **103ms** after it started and **4-5 of 8** landed inside it. macOS has the
-  same option with a slower check, because it has no resident helper to ask.
+  same option, and since 2026-09-16 the same kind of resident helper — a check
+  costs 22.6ms there against 55.8ms through `screencapture`, which is the
+  difference between recording the last third of a 300ms transition and all of it
+  (`docs/macos-findings.md`).
   The other end is settled by the screen too: a burst that waited for a change
   ends when the picture settles, so `frames` is an upper bound rather than a
   guess about how long the motion takes — measured on the same transition, 7
@@ -329,12 +332,20 @@ and end-to-end agent turns — and what each result does and does not prove.
 [`docs/macos-debugging.md`](docs/macos-debugging.md) is a self-contained runbook
 for verifying the macOS half on a Mac, written to be handed to an agent that has
 no context: eight steps in priority order, each saying what to run, what the
-answer should be, what a deviation would mean, and which numbers to report. The
-first step is the load-bearing one — the macOS still check hashes two captures
-rather than sampling pixels, and that only works if an unchanged screen produces
-identical bytes once the descriptive chunks are off. `tools/motion-fixture.html`
-is the animation it uses: a 300ms transition that fires on its own schedule, so
-nothing has to be clicked while a burst is waiting.
+answer should be, what a deviation would mean, and which numbers to report.
+`tools/motion-fixture.html` is the animation it uses: a 300ms transition that
+fires on its own schedule, so nothing has to be clicked while a burst is waiting.
+
+[`docs/macos-findings.md`](docs/macos-findings.md) is what that runbook produced
+when it was run on a Mac on 2026-09-16. It is worth reading before trusting any
+macOS number anywhere else: it confirms the region mapping is exact and the still
+check sound, and it contradicts the claim that macOS's change check leaves "four
+or five frames of a 300ms transition" — measured, it left one or two, because
+each check paid a whole `screencapture` process start. That measurement is why
+macOS now keeps a resident helper, and why the plugin is not quite as free of
+compiled code as it used to say it was: the helper is built from source on the
+machine that runs it, inherits the Screen Recording grant rather than asking for
+its own, and falls back to `screencapture` on every failure.
 
 ## License
 

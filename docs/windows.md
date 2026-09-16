@@ -31,12 +31,32 @@ convenient shortcut.
 
 ## The engine, and why it is PowerShell
 
-The macOS engine shells out to `screencapture` because the alternative is a
-compiled artefact. Windows has no equivalent command-line capture tool —
+Windows has no command-line capture tool —
 Snipping Tool is an interactive application that hands its result to the
 clipboard — so the engine is Windows PowerShell 5.1, present on every Windows
 install, driving `System.Drawing` through a shim compiled in memory by
-`Add-Type`. Nothing is shipped as a binary and nothing is installed.
+`Add-Type`. Nothing is installed by the user and nothing is fetched.
+
+macOS, by contrast, *has* a system-provided command-line capture tool,
+`/usr/sbin/screencapture`, and for most of this project's life that was the whole
+macOS engine — which is why this port could describe itself as having no compiled
+artefact at all. That changed on 2026-09-16, when the same measurement that
+justified the Windows engine was finally taken on macOS and came out the same
+way: a burst watching a 300ms transition recorded only its last third, because
+every change check paid a process start. macOS now keeps a resident helper too,
+for the same reason and with the same lifecycle, compiled from
+`lib/platform/darwin/engine.swift` on first use. So both platforms keep a
+compiled helper resident and neither ships one: each is built on the machine that
+will run it — `Add-Type` in memory on Windows, `swiftc` into a cache directory on
+macOS. `docs/macos-findings.md` has the macOS numbers.
+
+What differs is what the grant costs. Windows has no consent gate, so a helper
+inherits nothing and needs nothing. macOS gates capture per responsible process,
+so the macOS helper inherits the harness's Screen Recording grant by being its
+child: no second prompt, and no signature change to invalidate the grant the user
+already gave. That inheritance is the whole reason a compiled helper was
+acceptable there at all, and the one case it is not verified for is a harness
+started by launchd rather than by a terminal.
 
 `powershell.exe` rather than `pwsh`: 5.1 is the one that is always there, and
 it is STA by default, which is what the WinForms screen enumeration wants. The
@@ -189,7 +209,7 @@ against 155ms of encoding a 4K screen — and it has one consequence worth
 designing for rather than documenting away.
 
 `lib/capture.mjs` drives a burst frame by frame, which is the contract's
-baseline and the right shape on macOS. On Windows it would pay that fixed cost
+baseline, and on Windows it would pay that fixed cost
 per frame: a 400ms animation would be sampled over six seconds, which is not a
 sample of it. So Windows implements the optional `captureBurst` and takes the
 whole burst in one engine call — one process, one shim, one rectangle, N frames
@@ -198,11 +218,19 @@ about 0.7s instead of 6s, and the interval the tool advertises becomes
 reachable. The self-test asserts the spacing stays under 700ms on Windows, which
 a per-frame process could not do.
 
+macOS does **not** implement `captureBurst`, even now that it has a resident
+helper, and the difference is worth being explicit about: a macOS frame through
+the helper costs 13-82ms against Windows' fixed ~380ms, so amortising the engine
+inside one call buys nothing that being resident has not already bought. That
+keeps the frame loop and the `until_still` ending in one place, shared, rather
+than reimplemented per platform.
+
 Inside that loop a frame costs what the area costs, and the figures land beside
 macOS's rather than behind them — 161ms for a 4K frame against macOS's 155ms,
 and 12-29ms for the small regions against 47-56ms, because macOS pays its ~45ms
 of process start per frame while a Windows burst pays the PowerShell start once.
-`docs/verification.md` has the full table next to the macOS numbers.
+A warm macOS helper removes that per-frame cost — 13-82ms — which is the shape
+Windows has in a burst. `docs/verification.md` has the full table.
 
 ## The resident engine, and what it is actually for
 
@@ -260,17 +288,22 @@ is either a third-party binary the user has to install — this plugin has no
 dependencies by design — or one we compile and ship ourselves.
 
 macOS is the case where that argument does not bite: `/usr/sbin/screencapture`
-*is* a system-provided command-line capture tool, so both platforms end up doing
-the same thing — Node spawning a system-provided capture path. On macOS that
-path is a 45ms binary; on Windows it is a 148ms script host plus a compiled shim.
+*is* a system-provided command-line capture tool, so the baseline is the same
+shape on both platforms — Node spawning a capture path. On macOS that path is a
+45ms binary; on Windows it is a 148ms script host plus a compiled shim.
 PowerShell is the only host that is present on every install, needs nothing
-installed, and can reach .NET and GDI.
+installed, and can reach .NET and GDI. macOS's own helper, added later, does not
+change that argument: it exists because a system tool is *slow to start*, not
+because there was nothing to call.
 
 What is left of the gap is the shim compile, and that is why it is cached: the
 C# is compiled once per machine and loaded in 24ms afterwards, which is 177ms a
 call. A resident helper process would save the other 148ms and cost a lifecycle
 to manage — worth doing only if a look at the screen ever needs to be faster
-than a third of a second.
+than a third of a second. It turned out that it does, and not for speed's sake:
+a one-shot animation is over inside that third of a second, so the lifecycle was
+paid for and the resident engine exists. See "The resident engine, and what it is
+actually for" below.
 
 ## Multi-display
 
