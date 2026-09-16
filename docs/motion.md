@@ -242,29 +242,29 @@ five frames of a 300ms transition. Without the wait, macOS is in the same
 position as Windows: a call issued 300ms late gets nothing.
 
 The wait gives up rather than guessing. If nothing moves for `wait_timeout_ms`
-(ten seconds by default) the call **fails and says so**, because a burst of a
-screen that never changed is not a weaker answer, it is a wrong one.
+(thirty seconds by default, because the user has to read that something is
+watching and then trigger it) the call **fails and says so**, because a burst of
+a screen that never changed is not a weaker answer, it is a wrong one.
 
-### Where to watch, which is the whole strategy
+### Where to watch
 
-The waiting is only as good as the rectangle it waits on, and that rectangle is
-the caller's to choose — it is the same `region` the frames are taken from. The
-model is told this in the parameter description, because getting it wrong fails
-in both directions and neither failure looks like a failure:
+What the burst watches is the rectangle the frames come from, so the caller
+chooses it, and the choice is a trade rather than a rule. The engine compares a
+few thousand sampled points, which fixes how much of the rectangle each point
+speaks for:
 
-- **Watch a component, not the screen.** The engine compares a few thousand
-  sampled points, so on a component-sized region each point covers a few pixels
-  and a moving element changes hundreds of them. On a 4K screen the same few
-  thousand points sit about 45px apart: a small animation changes perhaps a
-  dozen of them — under the threshold, so it is *not* seen — while a clock, a
-  notification or another window changes more than enough to start the burst.
-  Whole-screen waiting is therefore worse than useless, because it misses what
-  was asked for and fires on what was not.
-- **Aim it by looking first.** The workflow that works is: capture once, find
-  the rectangle the animation lives in, then issue the burst on that rectangle
-  with `wait_for_change`. A region is in the same coordinates as the full
-  capture — verified by comparing a region against the matching crop of a 4K
-  capture, pixel for pixel — so the rectangle can be read off the first image.
+| watching | good at | bad at |
+| --- | --- | --- |
+| a component | a small animation changes a large share of the points, so it is seen, and little else in the rectangle moves | missing a transition that happens somewhere else |
+| the whole screen | anything that moves anywhere — a page load, a video, a full-screen app, a desktop-wide rearrange | a small animation spread thin across the samples, and any unrelated movement starting the burst first |
+
+Both are legitimate. Whole-screen watching is the right answer when everything
+is expected to move and the wrong one when only one part should, and it is the
+caller's to judge — the parameter description says exactly that rather than
+forbidding it. What it cannot be is a substitute for looking: a region read off
+an earlier capture — and a region is in the same coordinates as the full capture,
+verified by comparing one against the matching crop of a 4K capture pixel for
+pixel — is what makes a small animation visible at all.
 
 What the wait deliberately does **not** do:
 
@@ -277,12 +277,24 @@ What the wait deliberately does **not** do:
   frame. That is the price of not firing on a cursor blink, and it is why the
   parameter description tells the model to capture directly and compare frames
   for anything that short.
-- **It blocks the call while it waits.** A tool call has one result, so the
-  watching happens inside it: nothing can be pushed back later, and the timeout
-  has to cover however long the user takes to trigger the animation.
 - **It fires on the first change it believes in** — the first, not the most
   interesting. If something else moves inside the rectangle first, that is what
   gets captured.
+
+### The frames arrive as one batch, and that is the point
+
+The wait happens inside the call, and the call returns when it is done: the
+whole set of frames, in order, with their spacing. It is not a stream, and it
+should not be — a sequence only means something as a sequence. One frame pushed
+at a time would tell a model nothing about what it was watching, and the
+question "what did this transition do" cannot be answered from a frame that
+arrived before the previous one was understood. So the burst runs to completion
+and hands over the set, which is also why `wait_timeout_ms` has to cover
+everything that happens before the animation starts: the user has to read the
+message asking them to trigger it, and then trigger it.
+
+Each frame also comes back with its path, so the model can re-read or crop one
+of them later without asking for the burst again.
 
 ## Three numbers, any two of which settle the third
 
