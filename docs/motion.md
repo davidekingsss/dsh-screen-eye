@@ -97,27 +97,95 @@ millisecond of each other on both.
 ## The same question on Windows, and a different answer
 
 The table above is the macOS profile, where the fixed cost is small and the area
-is what costs. Windows inverts it. Measured on a 3840x2160 machine:
+is what costs. Windows inverts it. Measured on a 3840x2160 machine, with the C#
+shim already cached:
 
 | | cost |
 | --- | --- |
-| PowerShell start, `Add-Type`, assemblies | ~600ms, once per engine call |
-| a frame at 3840x2160 | ~150ms (63-82ms to read, 80-86ms to encode) |
-| a frame at 800x600 | ~16ms |
-| a complete single capture | 1000-1200ms, whatever the area |
+| `powershell.exe` start alone | 148ms, once per engine call |
+| loading the compiled shim | 24ms, once per engine call |
+| a frame at 3840x2160 | ~155ms — the same as macOS |
+| a frame at 1300x600 | ~22ms |
+| a frame at 400x300 | ~11ms |
+| a complete single capture | ~380ms, whatever the area |
 
 So the interval is not bounded by the area at all; it is bounded by the process
 start, and a burst taken as N calls would pay it N times — six frames of a 400ms
-animation sampled over six seconds, which is not a sample of it. Windows
-therefore takes the whole burst in **one** engine call: one process, one shim,
-one rectangle, N frames spaced by the interval. The result is a per-frame cost
-of about 150ms at full screen and 16ms at 800x600, which is the closest either
-platform gets to the macOS floor, and the self-test asserts a burst spacing
-under 700ms there precisely because a per-frame engine could not reach it.
+animation sampled over two and a half seconds, which is not a sample of it.
+Windows therefore takes the whole burst in **one** engine call: one process, one
+shim, one rectangle, N frames spaced by the interval. Inside that loop a frame
+costs what the area costs, and it costs less than on macOS, because macOS pays
+its ~45ms of process start per frame:
 
-The advice that follows from it is the same on both systems, for different
-reasons: **capture the region the motion happens in**. On macOS that buys a
-lower floor; on Windows it buys a cheaper frame inside an already-cheap loop.
+| captured area | Windows, in a burst | macOS, per frame |
+| --- | --- | --- |
+| 3840x2160, whole screen | 161ms | 155ms |
+| 1920x1080 | 60ms | 71ms |
+| 1200x800, a component | 29ms | 56ms |
+| 600x400 | 13ms | 51ms |
+| 200x150 | 12ms | 47ms |
+
+### The interval floor, asked for and achieved
+
+`interval_ms` is a target, and what a burst achieves is `max(target, frame cost)`
+plus a dozen milliseconds of scheduling. Asked for against achieved, ten frames
+each:
+
+| asked | 1300x600 (frame cost 22ms) | 400x300 (11ms) | 3840x2160 (155ms) |
+| --- | --- | --- | --- |
+| 10ms | 23ms | 19ms | 159ms |
+| 20ms | 34ms | 33ms | 160ms |
+| 40ms | 48ms | 48ms | 160ms |
+| 80ms | 94ms | 93ms | 155ms |
+| 160ms | 173ms | 172ms | 178ms |
+
+The floor is the frame cost, which is the same rule macOS follows — and on a
+region it is **19-23ms against macOS's 47ms**. At full screen the two platforms
+land on the same number to the millisecond, because there the cost is the
+encoder and not the process.
+
+### What that means for a 300ms animation
+
+Measured against an animation whose truth is known exactly: a 60px block
+crossing 660px in 300ms, repeating every 700ms, captured through the engine and
+then recovered from the frames' own pixels.
+
+- **Region, 1300x600, `frames: 10, interval_ms: 40`** — achieved 48ms, the block
+  found in **10 of 10 frames**, six of them inside the movement, positions
+  advancing 285 → 413 → 542 → 675 → 807 → 938. The speed recovered from the
+  frames is 2207-2787 px/s against a true 2200 px/s, and one burst covers up to
+  750 of the 660 px the block travels. That is enough to say what the animation
+  does: direction, distance, duration and easing shape are all visible.
+- **Full screen 4K, `frames: 6, interval_ms: 170`** — achieved 184ms, one frame
+  inside the movement. Enough to know *that* something moved, not enough to say
+  how.
+
+Which is the advice the macOS section already gives, now with a Windows number
+behind it: **capture the region the motion happens in**. A component-sized
+region resolves a 300ms transition on Windows at least as well as macOS does,
+and better at the small end.
+
+### The one place Windows is worse: getting started
+
+A burst cannot take its first frame before its engine exists. On macOS the first
+frame lands 50-155ms after the call; on Windows it lands ~380ms after it, which
+is PowerShell starting, the shim loading and WinForms coming up — measured, and
+not removable without a resident helper process.
+
+For a looping animation (`animation: ... infinite`, a spinner, a progress bar)
+this does not matter at all: the loop comes round again and the burst catches it.
+For a **one-shot** transition — a hover, a panel opening, a page load — a burst
+started after the fact can miss the whole thing, and on macOS it is three to
+eight times less likely to. The honest workflow on Windows is to look first and
+watch second: take a still capture, decide what the motion is and where, then
+burst on that region as the action is repeated. An agent that had to be told to
+look twice is not an autonomous eye, and one that has to be told that timing is
+tight is worse than one that is told the numbers, which is why they are here.
+
+The fix for a one-shot animation would be a resident engine process, pre-started
+and waiting, which would take the ~380ms down to a few milliseconds. That is a
+lifecycle to own — an idle timeout, cancellation, a process outliving a crashed
+harness — and it is not in yet.
 
 ## Three numbers, any two of which settle the third
 

@@ -390,6 +390,31 @@ observed there.
   also the reason the numbers in this file are medians of interleaved runs: the
   same code, unchanged, produced stretches of 380ms and stretches of 2.5-3.5s
   within one session, and a single unpaired sample here is worth nothing.
+- **A 300ms animation, watched and reconstructed.** The strongest evidence that
+  the burst path works the way the tool claims, because the truth is known
+  exactly: a 60px block crossing 660px in 300ms, repeating every 700ms, rendered
+  on screen while the engine captured it, with the block's position recovered
+  from each frame's own pixels.
+
+  | capture | achieved spacing | what came back |
+  | --- | --- | --- |
+  | `region 0,0,1300,600`, `frames: 10, interval_ms: 40` | 48-50ms | the block in **10 of 10 frames**, 5-6 of them mid-movement: 285 → 413 → 542 → 675 → 807 → 938 px |
+  | `screen` 4K, `frames: 6, interval_ms: 170` | 184ms | the block in all 6, but only one of them mid-movement |
+
+  The speed recovered from the frames is **2207-2787 px/s against a true
+  2200 px/s**, and one burst covers up to 750 of the 660 px the block travels:
+  direction, distance and duration are all readable off the sequence. At full
+  screen the same animation yields one usable frame, which is the macOS result
+  as well — 155ms a frame on both platforms. The interval floor was measured
+  separately, asking for 10/20/40/80/160ms and getting 19-23ms on a 400x300
+  region, 23-48ms on 1300x600 and 155-178ms at 4K: `max(target, frame cost)`
+  plus about a dozen milliseconds, the same rule macOS follows with a 47ms floor
+  on a component-sized region.
+- **What a burst cannot do on Windows**: start instantly. Its first frame lands
+  ~380ms after the call, against 50-155ms on macOS, because the engine has to
+  exist first. A looping animation is unaffected; a one-shot transition that
+  began before the call can be missed entirely. `docs/motion.md` has the numbers
+  and the workflow that follows from them.
 - **DPI is not a detail.** The same panel reported 3072x1728 to a DPI-unaware
   process and 3840x2160 after the shim declared per-monitor-v2 awareness, in that
   order, with the awareness call in between. Windows PowerShell is unaware by
