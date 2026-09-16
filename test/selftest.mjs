@@ -2308,7 +2308,16 @@ if (!live.ok) {
       // mistake would leave a script whose file is perfect and which PowerShell
       // nevertheless refuses — which is exactly the class of failure the
       // `-EncodedCommand` removal was meant to end.
-      const parsed = await runOneShot(captureScript(planCapture({ mode: 'screen' }), 'C:\\a.png'));
+      //
+      // The path is the suite's own directory, like every other capture here.
+      // It was `C:\a.png` first, and a standard Windows account may create only
+      // directories at the root of a drive — `C:\` grants Users read-and-execute
+      // and Authenticated Users `CreateDirectories`, nothing that writes a file.
+      // PowerShell then failed at `Save` with GDI+'s "a generic error occurred
+      // in GDI+", which reads like an engine fault and is a refused path; the
+      // same script against a writable directory answers ok=true. CI never saw
+      // it, because GitHub's runners are administrators.
+      const parsed = await runOneShot(captureScript(planCapture({ mode: 'screen' }), join(liveDir, 'one-shot.png')));
       assert.equal(parsed.ok, true, 'a one-shot script has to actually run');
     });
 
