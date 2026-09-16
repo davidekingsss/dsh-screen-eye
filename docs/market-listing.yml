@@ -47,7 +47,7 @@ description:
 #
 # Checklist from the contributing guide:
 #   [x] package.json declares dsh.bundle with a cordis.patch.yml
-#   [x] real, working code (116 self-test cases, run with `node test/selftest.mjs`
+#   [x] real, working code (118 self-test cases, run with `node test/selftest.mjs`
 #       on macOS and on Windows)
 #   [x] `dsh-plugin` topic added to the repository
 #   [x] description states what the plugin does, no superlatives

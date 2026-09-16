@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-116 cases, all passing, on Windows; 2 of them skip themselves there because they
+118 cases, all passing, on Windows; 2 of them skip themselves there because they
 are about the macOS Screen Recording model. The suite runs without a harness:
 the logic modules are imported directly and the tool definitions are exercised
 through a stubbed context.
@@ -341,6 +341,30 @@ observed there.
   (tolerance 8 per channel). That is the mapping the zoom workflow depends on —
   what the model measures inside a region is what `region` addresses — and it is
   now a measurement rather than an inference from matching sizes.
+- **Two screens, the second one left of the main.** A 2560x1600 panel at
+  x = -2560 is the arrangement that breaks naive engines, and every row below was
+  checked by comparing pixels rather than by reading sizes:
+
+  | check | result |
+  | --- | --- |
+  | inventory | `1: DISPLAY1 3840x2160@0,0 main`, `2: DISPLAY2 2560x1600@-2560,0` |
+  | `display 1` / `display 2` | 3840x2160 and 2560x1600, each the size the inventory reported |
+  | `screen` vs `display 1` | identical but for 51 of 600,000 pixels — the live clock and cursor |
+  | `region -2560,0,600,400` vs `display 2` at (0,0) | **240,000 of 240,000 identical** |
+  | seam region, left half vs the left screen's right edge | **60,000 of 60,000 identical** |
+  | seam region, right half vs the main screen's left edge | **60,000 of 60,000 identical** |
+  | `region 3200,0,600,400` vs `display 1` at (3200,0) | **240,000 of 240,000 identical** |
+  | `display 3` | refused: "does not exist: this machine reports 2 display(s)" |
+  | `region -4000,0,600,400` | refused: "does not overlap any display; this desktop spans -2560,0 6400x2160" |
+
+  The seam is the point: the desktop is one continuous 6400-pixel-wide plane
+  starting at -2560, so a rectangle straddling the boundary is stitched from both
+  screens with no gap and no offset, and the refusal reports that span rather
+  than the main display's. `window` clamps to the same span, so a foreground
+  window on either screen is captured whole. Mixed scaling changes none of it,
+  because per-monitor-v2 awareness puts every coordinate in physical pixels — a
+  DPI-unaware engine would see a shorter desktop with a gap where the seam is.
+  A self-test case now walks this ground and skips itself on a one-screen machine.
 - **Per-frame cost, by area, inside one engine call** — the number that decides
   whether a burst can sample motion at all, next to the macOS figures from
   `motion.md`:
@@ -355,10 +379,17 @@ observed there.
 
   Windows matches macOS at full screen and beats it on small regions, because
   macOS pays about 45ms of process start per frame while a Windows burst pays
-  the PowerShell start once. What Windows cannot match is a *single* call: 0.5s
-  on an idle stretch of the same machine and 1.0-1.5s with other work running,
-  against 47-155ms on macOS. That is the price of having no capture binary to
-  call, and it is why bursts are one process.
+  the PowerShell start once. What Windows cannot match is a *single* call:
+  **~380ms** in steady state against 47-155ms on macOS, of which 148ms is
+  `powershell.exe` starting with nothing to do. That is the price of having no
+  capture binary to call, and it is why bursts are one process.
+- **The shim cache, A/B against compiling in memory** — the two arms
+  interleaved, because this machine's process start swings by more than the
+  effect: **384ms against 561ms**, so compiling the C# once per machine and
+  loading the assembly afterwards is worth **177ms a call**. The measurement is
+  also the reason the numbers in this file are medians of interleaved runs: the
+  same code, unchanged, produced stretches of 380ms and stretches of 2.5-3.5s
+  within one session, and a single unpaired sample here is worth nothing.
 - **DPI is not a detail.** The same panel reported 3072x1728 to a DPI-unaware
   process and 3840x2160 after the shim declared per-monitor-v2 awareness, in that
   order, with the awareness call in between. Windows PowerShell is unaware by

@@ -162,24 +162,34 @@ session is in use.
 
 ## What one capture costs, and why a burst is one process
 
-Measured on the 3840x2160 machine:
+Measured on the 3840x2160 machine, steady state with the shim cached:
 
 | | cost |
 | --- | --- |
-| PowerShell start, `Add-Type`, assemblies | ~600ms, once per engine call |
-| a frame at full screen (3840x2160) | ~150ms (63-82ms to read, 80-86ms to encode) |
-| a frame at 800x600 | ~16ms |
-| a complete single capture | 0.5s on an idle machine, 1.0-1.5s with other work running |
-| the display inventory | ~460ms |
+| `powershell.exe` start alone | **148 ms** (`exit 0`, no work at all) |
+| loading the compiled shim | 24 ms (against 176 ms to compile it) |
+| WinForms, the capture, the PNG, the black-frame sample | ~210 ms |
+| a complete single capture | **~380 ms** |
+| the first capture on a machine with no cache | 2.6-2.9 s, once — the C# compiler itself is cold |
+| a frame at full screen (3840x2160) | ~150 ms (63-82ms to read, 80-86ms to encode) |
+| a frame at 800x600 | ~16 ms |
+| the display inventory | ~460 ms |
 
-So a single capture costs about a second whatever it captures, and the area
-barely matters. That is the opposite of the macOS profile, where a capture is
-45ms of process start against 155ms of encoding a 4K screen — and it has one
-consequence worth designing for rather than documenting away.
+The same machine also produces stretches where every capture costs 2.5-3.5s and
+stretches where it costs 380ms, with no change in the code — process start on a
+laptop with real-time scanning is simply not a constant. The figures above are
+medians of interleaved runs, which is the only way to measure anything here: an
+A/B of the two shim paths gave 384ms against 561ms, so the cache is worth
+**177ms a call**, and a single unpaired sample is worth nothing at all.
+
+The area barely matters for a single call: the fixed cost is the process. That
+is the opposite of the macOS profile, where a capture is 45ms of process start
+against 155ms of encoding a 4K screen — and it has one consequence worth
+designing for rather than documenting away.
 
 `lib/capture.mjs` drives a burst frame by frame, which is the contract's
-baseline and the right shape on macOS. On Windows it would pay that second per
-frame: a 400ms animation would be sampled over six seconds, which is not a
+baseline and the right shape on macOS. On Windows it would pay that fixed cost
+per frame: a 400ms animation would be sampled over six seconds, which is not a
 sample of it. So Windows implements the optional `captureBurst` and takes the
 whole burst in one engine call — one process, one shim, one rectangle, N frames
 spaced by the plan's interval. A six-frame burst of an 800x600 region costs
@@ -193,10 +203,73 @@ and 12-29ms for the small regions against 47-56ms, because macOS pays its ~45ms
 of process start per frame while a Windows burst pays the PowerShell start once.
 `docs/verification.md` has the full table next to the macOS numbers.
 
+### Why PowerShell, and not a smaller tool
+
+The question is fair — PowerShell is a large thing to start 148ms at a time —
+and the answer is that there is nothing smaller to call.
+
+`cmd.exe` cannot capture the screen. It has no way to reach Win32 or GDI at all;
+it can only start another program, and Windows ships **no command-line capture
+tool** to start. Snipping Tool is a windowed application that hands its result to
+the clipboard, `psr.exe` is interactive, and neither has a headless mode. So
+"use cmd" means "use cmd to run something that can capture", and that something
+is either a third-party binary the user has to install — this plugin has no
+dependencies by design — or one we compile and ship ourselves.
+
+macOS is the case where that argument does not bite: `/usr/sbin/screencapture`
+*is* a system-provided command-line capture tool, so both platforms end up doing
+the same thing — Node spawning a system-provided capture path. On macOS that
+path is a 45ms binary; on Windows it is a 148ms script host plus a compiled shim.
+PowerShell is the only host that is present on every install, needs nothing
+installed, and can reach .NET and GDI.
+
+What is left of the gap is the shim compile, and that is why it is cached: the
+C# is compiled once per machine and loaded in 24ms afterwards, which is 177ms a
+call. A resident helper process would save the other 148ms and cost a lifecycle
+to manage — worth doing only if a look at the screen ever needs to be faster
+than a third of a second.
+
+## Multi-display
+
+Two screens is the ordinary case on a desk, and it is the case where a naive
+engine goes wrong quietly: `Screen.AllScreens` is ordered however Windows feels
+like it, indices are not stable across sessions, and a screen to the left of the
+main one has **negative** coordinates.
+
+The engine reports displays main-first and 1-based, and hands out each display's
+origin so an agent can compute a region on any of them. `capture` accepts that
+same index, and `region` is expressed in the desktop's own coordinates — which
+is what makes negative x meaningful rather than an error.
+
+Measured with two screens attached — 3840x2160 main, and a 2560x1600 to its
+left at x = -2560:
+
+| check | result |
+| --- | --- |
+| inventory | `1: DISPLAY1 3840x2160@0,0 main`, `2: DISPLAY2 2560x1600@-2560,0` |
+| `display 1` / `display 2` | 3840x2160 / 2560x1600 — each the size the inventory reported |
+| `screen` (default) | the main display, pixel-identical to `display 1` |
+| `region -2560,0,600,400` | the left screen's top-left corner, **pixel-identical** to the matching crop of `display 2` |
+| `region -200,0,400,300` | straddles the seam: left half identical to the left screen's right edge, right half to the main screen's left edge |
+| `display 3` | refused: "does not exist: this machine reports 2 display(s)" |
+| `region -4000,0,600,400` | refused: "does not overlap any display; this desktop spans -2560,0 6400x2160" |
+
+The desktop span in that last message is the whole point: 6400 physical pixels
+wide starting at -2560, which is what a caller needs in order to know where the
+second screen begins. `mode: "window"` clamps the foreground window to that same
+span, so a window on the second screen — or straddling the two — captures
+correctly instead of being cut off at the main display's edge.
+
+Mixed scaling is the part that would be easy to get wrong and is worth stating:
+the shim declares per-monitor-v2 awareness, so all of these coordinates are
+physical pixels, and the two screens' bounds join exactly (-2560..0 and 0..3840)
+even though they are driven at different scales. A DPI-unaware engine would see
+a shorter desktop and a gap where the seam is not.
+
 ## What was measured, and what was not
 
-Run on one Windows machine — 3840x2160 at 125%, one display, session 1 — while
-writing this:
+Run on one Windows machine — 3840x2160 at 125% plus a 2560x1600 second screen,
+session 1 — while writing this:
 
 - every mode: `screen`, `display 1`, `region`, `window`, and the refusals for
   `display 99`, `select`, and a region off the desktop;
@@ -232,17 +305,23 @@ writing this:
   against the matching rectangle of a full 4K capture differed in **0 of 307,200
   pixels**;
 - `include_cursor`, whose draw is confirmed by the Win32 call's own result and
-  was then confirmed by eye;
+  was then confirmed by eye — and which correctly reports `-2` and a note when
+  Windows says the pointer is not showing, which is the state it was in when the
+  two-screen checks ran;
 - per-frame cost by area inside a burst, beside the macOS figures — 161ms at 4K
-  against macOS's 155ms, 12-29ms at component sizes against 47-56ms.
+  against macOS's 155ms, 12-29ms at component sizes against 47-56ms;
+- **two screens**, in the section above: indices, sizes, the negative-x region,
+  the seam, and the refusals — each verified by pixel comparison against the
+  display it should have come from, and now covered by a self-test case that
+  skips itself on a single-screen machine;
+- the shim cache, A/B against compiling in memory: 384ms against 561ms a call.
 
 Not verified, and named here rather than implied away:
 
-- **A second display.** The machine has one. The ordering rule (main first,
-  1-based) is asserted as a pure function against a two-display payload, and the
-  index round trip is asserted for index 1 only, so the "does `display 2` really
-  capture the second screen" check that macOS needed has not been repeated here.
-  The origins the inventory reports are what would make it checkable.
+- **More than two screens, or one arranged above the main one.** Two side by
+  side is what this machine has; a screen above the main one is the same
+  arithmetic with a negative y, and the region handling is symmetric, but it has
+  not been observed.
 - **A locked or disconnected session.** Producing that frame for real means
   locking the machine, which is not something a test should do to its user; the
   detection is covered by the sampler's threshold cases and by a frame that is

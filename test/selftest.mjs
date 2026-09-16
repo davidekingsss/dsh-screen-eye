@@ -42,6 +42,7 @@ import {
   parseScriptResult,
   powershellArgs,
   powershellPath,
+  shimCachePath,
   win32,
 } from '../lib/platform/win32.mjs';
 import { run } from '../lib/exec.mjs';
@@ -1602,15 +1603,26 @@ if (!live.ok) {
 
     await test('captures the window in the foreground, inside the desktop', async () => {
       const inventory = await inventoryOf();
-      const primary = inventory.displays[0];
+      // The bound is the whole virtual desktop, not the primary display: with
+      // two screens a foreground window may sit on the other one, straddle the
+      // seam, or be wider than the main screen — all of which are captures of a
+      // real window. What must never happen is a capture reaching outside the
+      // desktop, because that is where the pixels stop being the screen.
+      const displays = inventory.displays;
+      const left = Math.min(...displays.map((display) => display.x));
+      const top = Math.min(...displays.map((display) => display.y));
+      const right = Math.max(...displays.map((display) => display.x + display.width));
+      const bottom = Math.max(...displays.map((display) => display.y + display.height));
+
       const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
       const value = await tool.execute({ mode: 'window' }, stubExec());
-      const size = pngDimensions(await readFile(value.path));      // A maximised window reports a rectangle about eight pixels larger than
-      // the screen on every side, so this is the clamp being checked: a
-      // capture may be smaller than the desktop and must never be larger.
+      const size = pngDimensions(await readFile(value.path));
+      // A maximised window reports a rectangle about eight pixels larger than
+      // its screen on every side, so this is the clamp being checked: a capture
+      // may be smaller than the desktop and must never be larger.
       assert.ok(
-        size.width <= primary.width && size.height <= primary.height,
-        `the window capture is ${size.width}x${size.height}, outside the ${primary.width}x${primary.height} desktop`,
+        size.width <= right - left && size.height <= bottom - top,
+        `the window capture is ${size.width}x${size.height}, outside the ${right - left}x${bottom - top} desktop`,
       );
       assert.ok(size.width > 0 && size.height > 0);
 
@@ -1631,6 +1643,12 @@ if (!live.ok) {
       // result of the draw: 0 is DrawIconEx succeeding, -2 is a pointer that
       // Windows says is not showing, and the negative codes beyond that are
       // failures the tool turns into a note.
+      //
+      // -2 is a real answer rather than a failure, and it is the one this
+      // machine gives while the pointer is parked and Windows reports it
+      // hidden — observed as "showing=False at 2167,1984". So the case accepts
+      // it and requires the note to match what was reported, rather than
+      // assuming a visible pointer.
       const plan = planCapture({ mode: 'region', region: '0,0,240,180', include_cursor: true });
       const path = join(liveDir, 'cursor.png');
       const result = await run(powershellPath(), powershellArgs(captureScript(plan, path)));
@@ -1640,7 +1658,62 @@ if (!live.ok) {
         parsed.cursorDrawn === 0 || parsed.cursorDrawn === -2,
         `the pointer draw reported ${parsed.cursorDrawn}`,
       );
-      assert.equal(notesForFrame(parsed).length, 0, 'a successful draw is not a note');
+      const notes = notesForFrame(parsed);
+      assert.equal(
+        notes.length,
+        parsed.cursorDrawn === 0 ? 0 : 1,
+        'a pointer that was drawn is not a note, and one that was not is',
+      );
+
+      // And the same capture without the pointer asked for reports nothing at
+      // all, which is what tells the two branches apart.
+      const without = planCapture({ mode: 'region', region: '0,0,240,180' });
+      const plain = parseScriptResult((await run(
+        powershellPath(),
+        powershellArgs(captureScript(without, join(liveDir, 'no-cursor.png'))),
+      )).stdout);
+      assert.equal(plain.cursorDrawn, null);
+      assert.deepEqual(notesForFrame(plain), []);
+    });
+
+    await test('captures every numbered display, including one left of the main', async (skip) => {
+      // The multi-display path, which is the one part of the Windows engine a
+      // single-screen machine cannot exercise — and the part macOS needed a
+      // second screen to prove. When one is attached: every index the inventory
+      // hands out captures that display at its own size, a region addressed with
+      // a display's own origin lands on it (negative x when it sits left of the
+      // main screen), and a rectangle off the desktop is refused.
+      const inventory = await inventoryOf();
+      if (inventory.displays.length < 2) {
+        skip(`this machine reports ${inventory.displays.length} display(s)`);
+        return;
+      }
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+      for (const display of inventory.displays) {
+        const value = await tool.execute({ mode: 'display', display: display.index }, stubExec());
+        const size = pngDimensions(await readFile(value.path));
+        assert.deepEqual(
+          size,
+          { width: display.width, height: display.height },
+          `display ${display.index} (${display.name}) captured as ${size.width}x${size.height}`,
+        );
+      }
+
+      const second = inventory.displays[1];
+      const region = `${second.x},${second.y},320,240`;
+      const value = await tool.execute({ mode: 'region', region }, stubExec());
+      assert.deepEqual(pngDimensions(await readFile(value.path)), { width: 320, height: 240 });
+
+      // A rectangle a little further out than the whole desktop is refused, and
+      // the message names the desktop's real span rather than the main
+      // display's — which is how a caller learns where a second screen starts.
+      await assert.rejects(
+        () => tool.execute({ mode: 'region', region: `${second.x - 200},${second.y},64,64` }, stubExec()),
+        (error) => {
+          assert.match(error.message, /does not overlap any display/u);
+          return true;
+        },
+      );
     });
 
     await test('refuses mode "select" by name rather than capturing something else', async () => {
@@ -1923,8 +1996,10 @@ await test('a burst is one engine call with one path per frame', () => {
   for (const path of paths) assert.ok(script.includes(`'${path}'`), `${path} is missing from the burst`);
   assert.match(script, /\$interval = 250/u);
   // One shim, one rectangle, one process: that is what makes the interval
-  // reachable on a platform where a call costs about a second.
-  assert.equal(script.match(/Add-Type -Namespace/gu).length, 1);
+  // reachable on a platform where a call costs about a second. The shim source
+  // appears once however it is loaded — from the cache, compiled into it, or in
+  // memory as the last resort.
+  assert.equal(script.match(/\$nativeSource = @'/gu).length, 1);
   assert.equal(script.match(/Save-Frame \$rect \$path/gu).length, 1);
 });
 
@@ -2003,6 +2078,42 @@ await test('the engine path is the PowerShell every Windows install has', () => 
   // drive is a choice the installer made.
   assert.match(powershellPath(), /WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/u);
   assert.ok(powershellPath().startsWith(process.env.SystemRoot ?? 'C:\\Windows'));
+});
+
+await test('the compiled shim is cached, and the cache can only ever help', () => {
+  // Compiling the C# costs ~176ms of every engine call and loading it costs
+  // ~20ms, measured; each capture is a fresh process, so without a cache a
+  // burst pays the compile per frame. The cache is asserted as a shape: where
+  // it lives, that its name follows its source, and — the part that matters —
+  // that every failure path in the loader ends in the in-memory compile that
+  // was the only path before the cache existed.
+  const path = shimCachePath();
+  assert.ok(path.startsWith(tmpdir()), 'a cache outside the temporary directory is not a cache');
+  assert.match(path, /dsh-screen-eye-shim[\\/]native-[0-9a-f]{16}\.dll$/u);
+
+  const script = captureScript(planCapture({ mode: 'screen' }), 'C:\\a.png');
+  assert.ok(script.includes(`$shim = '${path}'`), 'the script must look in the cache it was told about');
+  assert.match(script, /Add-Type -Path \$shim/u, 'the fast path loads the compiled assembly');
+  assert.match(script, /-OutputAssembly \$staged/u, 'a miss compiles into the cache');
+  assert.match(script, /Test-Path \$shim/u);
+  // The guard that decides whether any of that worked, and the fallback behind
+  // it: the type is looked up by name, and the old in-memory compile runs when
+  // it is not there. Without that, a read-only or full temporary directory
+  // would turn a working capture into a broken one.
+  assert.match(script, /PSTypeName\]'DshScreenEye\.Native'\)\.Type/u);
+  assert.match(script, /catch \{ Fail 'engine-unavailable'/u);
+  // Two compiles of that one source, in this order: into the cache, and — if
+  // none of that worked — in memory, which is what the engine did before there
+  // was a cache at all.
+  assert.equal(script.match(/-MemberDefinition \$nativeSource -OutputAssembly \$staged/gu)?.length, 1);
+  assert.equal(script.match(/-MemberDefinition \$nativeSource -ErrorAction Stop/gu)?.length, 1);
+  assert.ok(
+    script.indexOf('-OutputAssembly $staged') < script.indexOf("PSTypeName]'DshScreenEye.Native'"),
+    'the cache attempt must come before the check that decides whether it worked',
+  );
+  // The source travels in the cache name, so a changed shim cannot be served
+  // from a stale assembly.
+  assert.equal(shimCachePath(), path, 'the cache path is a function of the source alone');
 });
 
 await test('a platform says whether it can take a whole burst in one call', () => {

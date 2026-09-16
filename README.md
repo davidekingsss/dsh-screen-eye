@@ -231,11 +231,18 @@ away; [`docs/windows.md`](docs/windows.md) has the measurements.
   reports as a successful capture of a black screen. The engine checks the
   window station and session first and refuses by name, and a frame that is
   black everywhere is returned *with a note* saying what that usually means.
-- **Bursts.** A Windows capture costs about a second, almost regardless of area,
-  because the engine pays a PowerShell start per call. Taking a six-frame burst
-  as six calls would sample a 400ms animation over six seconds, so Windows takes
-  the whole burst in one engine call and the interval in the plan becomes
-  reachable.
+- **Bursts.** A Windows capture costs about 380ms in steady state, almost
+  regardless of area, because the engine pays a PowerShell start per call (148ms
+  of that with nothing to do at all); the C# shim it needs is compiled once per
+  machine and loaded from a cache after that, which is worth 177ms a call. Taking
+  a six-frame burst as six calls would sample a 400ms animation over two and a
+  half seconds, so Windows takes the whole burst in one engine call and the
+  interval in the plan becomes reachable.
+- **Two screens.** Displays are listed main-first with their origins, so a
+  `region` on a second screen — including one to the left of the main display,
+  where x is negative — addresses the right pixels. Verified on a 3840x2160 main
+  screen with a 2560x1600 screen at x = -2560, by comparing captures against each
+  other pixel for pixel.
 - **`select`.** Windows ships no system region picker, so that mode is refused
   with the reason and `region` suggested; `window` captures the window already in
   front, since there is nothing to click either.
