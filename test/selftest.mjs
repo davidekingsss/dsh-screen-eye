@@ -1785,12 +1785,21 @@ if (!live.ok) {
     }
   });
 
-  await test('every display is captured at its native resolution, not its point size', async () => {
+  await test('every display is captured at its native resolution, not its point size', async (skip) => {
     // The bug this pins was invisible on the machine it shipped from: the main
     // display is 1x, so an unscaled request is correct there and every case
     // passed. On a 2x panel the same request returns half the panel's
     // resolution — which looks like a capture, only a softer one — and a region
     // on it is refused outright.
+    //
+    // It is the macOS engine's bug specifically: it comes from ScreenCaptureKit
+    // speaking in points while its output size is in pixels. Windows reports a
+    // display's own resolution and has no such split, so asking it here would
+    // assert a shape it does not have.
+    if (!ON_MACOS) {
+      skip(`the point-versus-pixel split is ScreenCaptureKit's, not ${process.platform}'s`);
+      return;
+    }
     //
     // Asked of every display the machine reports, against the size the
     // inventory gives for it, so a Retina panel is checked the moment one is
@@ -2844,9 +2853,27 @@ await test('a frame with a note reaches the model beside its image', () => {
 });
 
 await test('a display origin reaches the model when the platform reports one', () => {
+  // The contract is conditional, and it is worth stating as such: an origin is
+  // rendered when the inventory carries one and omitted when it does not.
+  //
+  // It used to be read as a platform claim — "macOS reports no origin, so none
+  // may appear" — which was true when macOS was read through `system_profiler`
+  // and stopped being true once the resident helper began contributing
+  // positions. The render did not change; the premise did. So the assertion is
+  // now about what the envelope does with what it is given, and a fixture with
+  // no origin stands for every platform that has none rather than for one.
   const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
-  const [macos] = tool.output.render({}, screenshotShapes()['a display inventory']);
-  assert.doesNotMatch(macos.text, / at /u, 'macOS reports no origin, so none may appear');
+  const [unknown] = tool.output.render({}, screenshotShapes()['a display inventory']);
+  assert.doesNotMatch(unknown.text, / at /u, 'an inventory with no origin must render without one');
+
+  // And macOS may now report one — the same screen the inventory above leaves
+  // bare, once the helper has told the plugin where it sits.
+  const [macosWithOrigin] = tool.output.render({}, {
+    mode: 'displays',
+    displays: [{ index: 2, name: 'Sidecar Display', width: 2388, height: 1668, x: -748, y: 2160 }],
+  });
+  assert.match(macosWithOrigin.text, /at -748,2160/u, 'a negative origin is how a display to the left is addressed');
+
   const [windows] = tool.output.render({}, {
     mode: 'displays',
     displays: [{ index: 2, name: '\\\\.\\DISPLAY2', width: 2560, height: 1440, x: 3840, y: 0 }],
