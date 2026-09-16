@@ -65,7 +65,7 @@ export const SETTINGS_NAMESPACE = 'screen-eye';
 export const Config = z.object({
   outputDir: z
     .string()
-    .description('Directory for captured PNGs. Defaults to <DSH home>/screen-eye.'),
+    .description('Directory for captured PNGs. Defaults to a "Screen Eye" folder inside the system pictures folder.'),
   locale: z
     .string()
     .default('en')
@@ -84,9 +84,9 @@ export const Config = z.object({
     ),
   maxDimension: z
     .natural()
-    .default(8192)
+    .default(4096)
     .description(
-      'Largest side, in pixels, a capture may have. The provider caps a side at 8192 (4096 when a request carries fifteen or more images) and the attachment store caps it at 8192 too; a single display never reaches either. A capture over the cap is refused with its size named, not silently resized.',
+      'Largest side, in pixels, a capture may have. 4096 is where the provider\'s per-image limit lands once a request carries fifteen or more images, and a burst can carry hundreds. A capture over the cap is refused with its size named rather than resized, so a display larger than this needs the field raised to be captured whole.',
     ),
   requireImageCapableModel: z
     .boolean()

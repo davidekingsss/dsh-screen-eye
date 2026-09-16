@@ -7,8 +7,8 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-134 cases: 132 pass on Windows and 2 skip themselves there, because they are
-about the macOS Screen Recording model. On macOS all 134 run. The suite runs
+135 cases: 133 pass on Windows and 2 skip themselves there, because they are
+about the macOS Screen Recording model. On macOS all 135 run. The suite runs
 without a harness: the logic modules are imported directly, the tool definitions
 are exercised through a stubbed context, and the browser half is loaded the way
 the harness loads it — as a classic script — and rendered by a stand-in React.
@@ -695,14 +695,22 @@ anything.
 ### 8.5 The settings surface, and how far it was verified
 
 The plugin's settings are now a namespace in the harness's settings document
-rather than only a mount entry, and a browser half puts a card for it in
-**Settings → Plugins**. What that rests on, and what was actually checked:
+rather than only a mount entry, and a browser half puts a page for them in
+**Settings → Screen Eye**. What that rests on, and what was actually checked:
 
-- **The pairing is by name.** The Host registers `screen-eye`; the browser
-  registers a `settings.plugin.item` card keyed by the same string, and the shell
-  pairs them. A self-test reads both — `SETTINGS_NAMESPACE` from the Host half,
-  the registered key from the browser half, after loading `client/client.js` the
-  way the harness does, as a classic script on `window.__ModuleLoader__.load`.
+- **The pairing is by name.** The Host registers `screen-eye`; the browser binds
+  that namespace and registers a `settings.section` carrying the same id. A
+  self-test reads both — `SETTINGS_NAMESPACE` from the Host half, the registered
+  section id from the browser half, after loading `client/client.js` the way the
+  harness does, as a classic script on `window.__ModuleLoader__.load`.
+- **The nav row, which the platform cannot label.** The `settings.section`
+  contract projects `id`, `order` and `label`; a row's glyph comes from a closed
+  list of built-in ids inside the shell, so a plugin from outside the repository
+  gets the generic gear. The case drives the workaround against a stub DOM: only
+  the button carrying this plugin's own label is marked, the marking is kept
+  current by an observer, and the stylesheet both hides the shell's glyph and
+  draws an eye as a `currentColor` mask. What a real browser then paints is not
+  verified here — it is the first thing to look at after a restart.
 - **The layering.** The mount entry is the base and the user document overrides
   it; a cleared field falls back to the entry. Asserted by inspecting what
   `apply()` hands `settings.installSection`, and by moving the source the way the
@@ -711,17 +719,17 @@ rather than only a mount entry, and a browser half puts a card for it in
   The case drives that through an observable that needs no capture: a budget
   below the floor can only have come from the edited source, and the same call
   passes validation once the source is sane again.
-- **The card itself.** Loaded in a `node:vm` context with a twenty-line React
-  stand-in — enough to render it, open it, type into its controls and press save,
-  which asserts that seven controls render in order, that edits are staged rather
-  than written as they are typed, that save issues one typed write per field, that
-  a refused write keeps the draft, and that a value outside a field's range blocks
+- **The page itself.** Loaded in a `node:vm` context with a twenty-line React
+  stand-in — enough to render it, type into its controls and press save, which
+  asserts that seven controls render in order, that edits are staged rather than
+  written as they are typed, that save issues one typed write per field, that a
+  refused write keeps the draft, and that a value outside a field's range blocks
   the save. It also asserts that an unserved namespace renders nothing at all.
-
-Two things are **not** verified, and are worth saying plainly: the card has never
-been rendered by a browser, and it has never been seen inside the running
-settings page. Both are one restart away — the harness composes its client graph
-at startup — and are the first thing to check after one.
+- **The defaults**, which are the part a user meets without opening anything:
+  captures land in `<pictures>/Screen Eye`, and `maxDimension` is 4096 — the
+  provider's own per-image side limit once a request carries fifteen or more
+  images, which a burst can. Both are asserted as resolved values rather than
+  as documentation.
 
 ### 8.6 What a burst is allowed to cost, checked against the deployment
 
@@ -801,3 +809,5 @@ motion, and, worse, a third chosen by the plugin rather than by the caller.
   precisely so it is one file — so the store's errors are left to propagate
   rather than translated into advice for a case current hardware does not
   produce. Worth revisiting if a display larger than 8K ships.
+
+

@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import vm from 'node:vm';
 
@@ -72,7 +72,7 @@ import {
 import { screenPermissionTool as screenPermissionToolRaw } from '../lib/permission-tool.mjs';
 import { capturesToRemove, pruneCaptures } from '../lib/retention.mjs';
 import { captureFailureError, screenshotTool as screenshotToolRaw } from '../lib/screenshot-tool.mjs';
-import { resolveOutputPath, resolveSettings } from '../lib/settings.mjs';
+import { DEFAULT_TIMEOUT_MS, resolveOutputPath, resolveSettings } from '../lib/settings.mjs';
 
 /**
  * Both tools take a *reader* for settings rather than a settings object, because
@@ -259,10 +259,17 @@ process.stdout.write('\nsettings and output paths\n');
 
 await test('applies documented defaults', () => {
   const settings = resolveSettings({});
-  assert.ok(settings.outputDir.endsWith('screen-eye'));
+  // Captures land with the user's pictures rather than inside the harness's
+  // private home, in a folder of their own rather than loose among them.
+  assert.equal(settings.outputDir, join(homedir(), 'Pictures', 'Screen Eye'));
   assert.equal(settings.locale, 'en');
   assert.equal(settings.requireImageCapableModel, true);
   assert.equal(settings.deleteAfterCommit, false);
+  // 4096 is where the provider's per-image side limit lands once a request
+  // carries fifteen or more images, and a burst can carry hundreds.
+  assert.equal(settings.maxDimension, 4096);
+  assert.equal(settings.keepRecent, 50);
+  assert.equal(settings.timeoutMs, DEFAULT_TIMEOUT_MS);
 });
 
 await test('honours overrides but ignores unknown keys', () => {
@@ -2519,7 +2526,7 @@ await test('apply() offers its settings as a namespace, based on the mounted ent
     assert.equal(section.ns, 'screen-eye', 'the namespace is the card key in the client half');
     assert.equal(section.entry.locale, 'zh', 'the entry is the base layer, not the defaults');
     assert.equal(section.entry.keepRecent, 7);
-    assert.equal(section.entry.maxDimension, 8192, 'and it is schema-resolved, not raw');
+    assert.equal(section.entry.maxDimension, 4096, 'and it is schema-resolved, not raw');
     assert.equal(typeof section.hooks.setSource, 'function');
   });
 });
@@ -2712,6 +2719,37 @@ await test('apply() registers nothing on a host with no engine', async () => {
 process.stdout.write('\nthe settings card (browser half)\n');
 
 /**
+ * As much DOM as the browser half touches: a nav whose buttons can be found by
+ * text, a stylesheet sink, and the observer it uses to keep the nav marking
+ * current. A real jsdom would be a dependency this plugin does not have, and the
+ * half uses six DOM calls in total.
+ *
+ * @returns the stub DOM, with the collections the cases assert against.
+ */
+function fakeDom() {
+  const buttons = [];
+  const observers = [];
+  const styles = [];
+  const document = {
+    querySelectorAll: (selector) => (selector.startsWith('nav') ? buttons : []),
+    getElementById: (id) => styles.find((style) => style.id === id) ?? null,
+    createElement: () => ({ id: '', textContent: '' }),
+    head: { appendChild: (node) => styles.push(node) },
+  };
+  return {
+    buttons,
+    observers,
+    styles,
+    document,
+    MutationObserver: class {
+      constructor(callback) { observers.push(callback); }
+      observe() {}
+      disconnect() {}
+    },
+  };
+}
+
+/**
  * Load `client/client.js` the way the harness does: as a classic script that
  * registers itself on `window.__ModuleLoader__` and hands back a factory.
  *
@@ -2720,21 +2758,18 @@ process.stdout.write('\nthe settings card (browser half)\n');
  * hand-written precisely so the plugin needs no build step, which means nothing
  * else would catch a mistake in it before a user opened the settings page.
  *
- * @param React - the React stand-in the card should be given. It has to be the
- *   same instance the caller renders with, or the card's state and the
+ * @param React - the React stand-in the page should be given. It has to be the
+ *   same instance the caller renders with, or the page's state and the
  *   renderer's would live in two different places.
- * @returns the registered plugin body, plus what the factory required.
+ * @param dom - the stub DOM the script should see; one is made when omitted.
+ * @returns the registered plugin body, what the factory required, and the DOM.
  */
-function loadClientHalf(React) {
+function loadClientHalf(React, dom = fakeDom()) {
   const registrations = [];
   const sandbox = {
     window: { __ModuleLoader__: { load: (registration) => registrations.push(registration) } },
-    document: {
-      // Only reached from an effect, which the tiny React below never runs.
-      getElementById: () => null,
-      createElement: () => ({ set textContent(value) {}, id: '' }),
-      head: { appendChild() {} },
-    },
+    document: dom.document,
+    MutationObserver: dom.MutationObserver,
     console,
   };
   vm.createContext(sandbox);
@@ -2748,9 +2783,9 @@ function loadClientHalf(React) {
   const body = registration.factory((specifier) => {
     required.push(specifier);
     if (specifier === 'react') return React;
-    throw new Error(`the card required an unexpected module: ${specifier}`);
+    throw new Error(`the page required an unexpected module: ${specifier}`);
   });
-  return { body, required };
+  return { body, required, dom };
 }
 
 /**
@@ -2868,20 +2903,21 @@ function stubScope(section, user = {}) {
   };
 }
 
-await test('the card claims the namespace the Host registers, and only that one', () => {
-  // The two halves are paired by this string and by nothing else: the settings
-  // shell dispatches a card per namespace the Host serves that some browser
-  // plugin claims. A typo here is a card that never appears, with no error
-  // anywhere to say why — which is exactly the kind of thing a test is for.
+await test('the page claims its own settings section, named by the Host namespace', () => {
+  // The two halves are paired by this string and by nothing else: the browser
+  // binds the namespace the Host registered. A typo here is a page that renders
+  // nothing, with no error anywhere to say why — which is exactly the kind of
+  // thing a test is for.
   const react = tinyReact();
   const { body, required } = loadClientHalf(react.React);
   assert.equal(body.name, 'dsh-screen-eye');
   assert.deepEqual([...body.inject].sort(), ['locale', 'settingsScope', 'slots']);
-  assert.deepEqual(required, ['react'], 'the card requires nothing but the shared React');
+  assert.deepEqual(required, ['react'], 'the page requires nothing but the shared React');
 
   const bound = [];
   const registered = [];
   const dictionaries = [];
+  const effects = [];
   const ctx = {
     locale: {
       bind: (ns) => (key) => `${ns}:${key}`,
@@ -2889,10 +2925,10 @@ await test('the card claims the namespace the Host registers, and only that one'
     },
     settingsScope: { bind: (spec) => { bound.push(spec); return stubScope({}); } },
     slots: {
-      inject(_name, callback) { callback(); },
-      register(spec, component) { registered.push({ spec, component }); return () => {}; },
+      inject(name, callback) { registered.push({ name, entries: [] }); callback(); },
+      register(spec, component) { registered.at(-1).entries.push({ spec, component }); return () => {}; },
     },
-    effect(callback) { callback(); },
+    effect(callback, label) { effects.push(label); return callback(); },
   };
   body.apply(ctx);
 
@@ -2901,20 +2937,74 @@ await test('the card claims the namespace the Host registers, and only that one'
   assert.equal(bound.length, 1);
   assert.equal(bound[0].namespace, SETTINGS_NAMESPACE, 'bound to the Host namespace');
   assert.equal(registered.length, 1);
-  assert.equal(registered[0].spec.name, 'settings.plugin.item');
-  assert.equal(registered[0].spec.key, SETTINGS_NAMESPACE, 'the card key is the namespace');
-  assert.ok(registered[0].spec.inject().scope, 'the card is handed its bound scope');
+  assert.equal(registered[0].name, 'settings.section', 'a section of its own, not a card under Plugins');
+  assert.equal(registered[0].entries.length, 1);
+  const { spec } = registered[0].entries[0];
+  assert.equal(spec.id, SETTINGS_NAMESPACE, 'the nav id is the namespace');
+  assert.equal(typeof spec.label, 'function', 'the shell resolves the label per render');
+  assert.ok(spec.order > 20, 'after what the harness ships: general 0, models 10, plugins 15, presets 20');
+  assert.ok(spec.inject().scope, 'the page is handed its bound scope');
+  assert.ok(
+    effects.some((label) => String(label).includes('navigation glyph')),
+    'the nav glyph is an effect, so it is removed with the plugin',
+  );
 
-  // Copy travels with the card: a third-party namespace the locale registry has
+  // Copy travels with the page: a third-party namespace the locale registry has
   // never heard of registers its own dictionaries.
   assert.deepEqual(dictionaries.map((entry) => entry.locale).sort(), ['en', 'zh']);
   for (const entry of dictionaries) assert.equal(entry.ns, 'screen-eye');
-  assert.equal(dictionaries[0].dict.name, dictionaries[1].dict.name, 'both languages name the card');
-  assert.ok(dictionaries.find((entry) => entry.locale === 'zh').dict.timeoutMs.includes('毫秒'));
-  assert.ok(dictionaries.find((entry) => entry.locale === 'zh').dict.save === '保存');
+  const zh = dictionaries.find((entry) => entry.locale === 'zh').dict;
+  const en = dictionaries.find((entry) => entry.locale === 'en').dict;
+  assert.equal(en.nav, 'Screen Eye');
+  assert.equal(zh.nav, '屏幕之眼', 'the nav row is named in both languages');
+  assert.equal(zh.save, '保存');
+  assert.ok(zh.timeoutMs.includes('毫秒'));
+  // Both dictionaries must carry the same keys, or a language switch leaves the
+  // page rendering undefined where a label should be.
+  assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort());
 });
 
-await test('the card renders every setting, and nothing at all when unserved', () => {
+await test('the section marks its own nav row, which is the only way it gets an icon', () => {
+  // The contract projects no id onto a nav row and no icon onto a section: the
+  // shell picks glyphs from a closed list of built-in ids and gives anything
+  // else the generic gear. So the row is claimed by the label this plugin
+  // registered, and a stylesheet swaps the glyph. That is a workaround for a
+  // contract gap, which is exactly the kind of thing that breaks silently — so
+  // what it matches on and what it draws are both asserted.
+  const react = tinyReact();
+  const dom = fakeDom();
+  const marked = new Map();
+  const button = (text) => ({
+    textContent: text,
+    setAttribute: (name) => marked.set(text, name),
+    removeAttribute: () => marked.delete(text),
+  });
+  dom.buttons.push(button('General'), button('Screen Eye'));
+
+  const { body } = loadClientHalf(react.React, dom);
+  body.apply({
+    locale: { bind: () => (key) => key, register: () => () => {} },
+    settingsScope: { bind: () => stubScope({}) },
+    slots: { inject: (_name, callback) => callback(), register: () => () => {} },
+    effect: (callback) => callback(),
+  });
+
+  assert.equal(marked.get('Screen Eye'), 'data-dsh-screen-eye-settings-nav', 'our row is marked');
+  assert.equal(marked.has('General'), false, 'nobody else is');
+  assert.equal(dom.observers.length, 1, 'and the marking is kept current as the dialog mounts and relabels');
+
+  // The stylesheet is the other half of the workaround, and it has to be right:
+  // it hides the shell's fallback glyph and draws an eye as a currentColor mask
+  // so the row's own hover and active colours come through.
+  assert.equal(dom.styles.length, 1, 'one stylesheet');
+  const [css] = dom.styles;
+  assert.match(css.textContent, /\[data-dsh-screen-eye-settings-nav\] > svg:first-child\{display:none\}/u);
+  assert.match(css.textContent, /\[data-dsh-screen-eye-settings-nav\]::before\{[^}]*background:currentColor/u);
+  assert.match(css.textContent, /mask:url\("data:image\/svg\+xml,[^"]*%3Ccircle[^"]*"\)/u);
+  assert.match(css.textContent, /--dsw-alias-label-primary/u, 'and it is drawn in the host\u2019s own tokens');
+});
+
+await test('the page renders every setting, and nothing at all when unserved', () => {
   const react = tinyReact();
   const { body } = loadClientHalf(react.React);
   const registered = [];
@@ -2927,11 +3017,12 @@ await test('the card renders every setting, and nothing at all when unserved', (
   body.apply(ctx);
 
   const component = registered[0];
-  const scope = stubScope({ locale: 'zh', keepRecent: 20, maxDimension: 8192 }, { keepRecent: 20 });
+  const scope = stubScope({ locale: 'zh', keepRecent: 20, maxDimension: 4096 }, { keepRecent: 20 });
   const view = react.render(component, { scope, locale: undefined, t: (key) => key });
-  // A collapsed card is a header and nothing else; opening it is one click.
-  byClass(view.tree, 'screye-header')[0].props.onClick();
 
+  // A page, not a card: the controls are there on arrival rather than behind a
+  // disclosure, and the heading says what the page is.
+  assert.equal(byClass(view.tree, 'screye-title').length, 1);
   const inputs = findAll(view.tree, (node) => node.props['aria-label'] !== undefined);
   assert.deepEqual(
     inputs.map((node) => node.props['aria-label']),
@@ -2973,10 +3064,6 @@ await test('an edit is staged and written on save, and a refusal keeps it', asyn
   const props = { scope, locale: undefined, t: (key) => key };
   const view = react.render(component, props);
 
-  // The card starts collapsed; clicking its header is how a user opens it.
-  assert.equal(byClass(view.tree, 'screye-save').length, 0, 'a collapsed card draws no controls');
-  byClass(view.tree, 'screye-header')[0].props.onClick();
-
   const control = (label) => findAll(view.tree, (node) => node.props['aria-label'] === label)[0];
   control('keepRecent').props.onChange({ target: { value: '5' } });
   control('locale').props.onChange({ target: { value: 'zh' } });
@@ -2986,7 +3073,7 @@ await test('an edit is staged and written on save, and a refusal keeps it', asyn
   assert.deepEqual(scope.writes, []);
 
   assert.equal(byClass(view.tree, 'screye-save')[0].props.disabled, false, 'staged edits enable the save');
-  assert.equal(byClass(view.tree, 'screye-pending').length, 1, 'and say so on the header');
+  assert.equal(byClass(view.tree, 'screye-pending').length, 1, 'and say so above the buttons');
 
   await byClass(view.tree, 'screye-save')[0].props.onClick();
   await new Promise((resolve) => { setImmediate(resolve); });
@@ -2997,13 +3084,9 @@ await test('an edit is staged and written on save, and a refusal keeps it', asyn
   ], 'each staged field is written as its own typed value');
 
   // A refused write keeps the draft, so the user corrects rather than retypes.
-  const refusing = stubScope({ keepRecent: 50 });
-  refusing.set = async () => { throw new Error('SETTINGS_CONFLICT'); };
   const refused = stubScope({ keepRecent: 50 });
-  refused.getSnapshot = refusing.getSnapshot;
   refused.set = async () => { throw new Error('SETTINGS_CONFLICT'); };
   const refusedView = react.render(component, { scope: refused, locale: undefined, t: (key) => key });
-  byClass(refusedView.tree, 'screye-header')[0].props.onClick();
   findAll(refusedView.tree, (node) => node.props['aria-label'] === 'keepRecent')[0]
     .props.onChange({ target: { value: '9' } });
   await byClass(refusedView.tree, 'screye-save')[0].props.onClick();
@@ -3019,7 +3102,6 @@ await test('an edit is staged and written on save, and a refusal keeps it', asyn
   // A draft that is not a value the field takes blocks the save rather than
   // being dropped: silently discarding a typed number is how a form lies.
   const typed = react.render(component, props);
-  byClass(typed.tree, 'screye-header')[0].props.onClick();
   findAll(typed.tree, (node) => node.props['aria-label'] === 'timeoutMs')[0]
     .props.onChange({ target: { value: '10' } });
   assert.equal(byClass(typed.tree, 'screye-save')[0].props.disabled, true, 'a value below the floor blocks the save');

@@ -1,12 +1,10 @@
 /**
  * dsh-screen-eye — browser half.
  *
- * One settings card, in the harness's own plugin settings tab. The Host side
- * registers the `screen-eye` settings namespace (`index.mjs`); this file claims
- * it by name with a `settings.plugin.item` entry keyed on the same string, and
- * that pairing is the whole contract — the settings shell dispatches a card per
- * served namespace that something claims, and knows nothing about what either
- * means.
+ * One settings section of its own: a row in the settings navigation with an eye
+ * on it, and a page on the right with the plugin's seven settings. The Host side
+ * registers the `screen-eye` settings namespace (`index.mjs`); this file binds
+ * that namespace through `ctx.settingsScope` and contributes the page.
  *
  * ## Why this file is hand-written and has no build step
  *
@@ -18,23 +16,22 @@
  * `React.createElement` calls and everything else arrives through the module
  * table the deployment already serves.
  *
- * What it must NOT do is import the harness's own card components. The client
- * bundle-purity gate forbids cross-plugin value imports, and the official
- * `PluginCard` is not addressable anyway: its copy keys are a closed union of
- * its own plugin names. So the card draws its own chrome — the same design
- * tokens and the same measurements, its own class names — and reaches the
- * settings document through the one supported seam, `ctx.settingsScope`.
+ * What it must NOT do is import the harness's own components. The client
+ * bundle-purity gate forbids cross-plugin value imports, so the page draws its
+ * own chrome — the same design tokens (`--dsw-alias-*`), the same measurements,
+ * its own class names — and registers its own dictionaries for its own copy.
  *
- * ## What the card does
+ * ## The one thing the platform does not offer: an icon
  *
- * Reads the namespace's resolved section (schema defaults, then the mount entry
- * as the base layer, then the user's own values) and renders one row per field.
- * Edits are staged and written on save, because every write is a durable,
- * revision-fenced document mutation: a control that committed on each keystroke
- * would turn one edit into a write the user never asked for and could not
- * preview. A field the user has overridden carries a badge and a reset that
- * clears it, letting it fall back to what the plugin was mounted with. A
- * namespace this deployment does not serve renders nothing at all.
+ * The `settings.section` contract projects `id`, `order` and `label` and nothing
+ * else, and the settings shell picks a section's glyph from a closed list of
+ * built-in ids — anything it does not recognise gets the generic gear. There is
+ * no icon field to set. So the row is claimed after it mounts: the plugin marks
+ * the nav button whose label is its own, and a stylesheet hides the shell's gear
+ * and draws an eye in its place as a `currentColor` mask, which keeps the
+ * shell's hover and active colours and its 16px rhythm. The marker is removed on
+ * disposal and carries no shell structure, so nothing here depends on where the
+ * shell puts its nodes — only on the label the registrant itself supplied.
  *
  * @module dsh-screen-eye/client
  */
@@ -46,15 +43,25 @@ window.__ModuleLoader__.load({
 
     const h = React.createElement;
 
-    /** The settings namespace this card claims; `index.mjs` owns the same string. */
+    /** The settings namespace this page edits; `index.mjs` owns the same string. */
     const NAMESPACE = 'screen-eye';
 
-    /** Locale namespace for this card's own copy. */
+    /** Locale namespace for this page's own copy. */
     const LOCALE_NS = 'screen-eye';
 
+    /** Attribute marking this plugin's own row in the settings navigation. */
+    const NAV_MARKER = 'data-dsh-screen-eye-settings-nav';
+
+    /**
+     * Lucide's `eye`, as a mask so the glyph takes the nav row's own colour.
+     * Percent-encoded because it rides inside a `url()` in a stylesheet.
+     */
+    const EYE_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E";
+
     const EN = {
-      name: 'Screen Eye',
-      description: 'Screen vision for the agent: where captures land, how many are kept, and what a call may cost.',
+      nav: 'Screen Eye',
+      title: 'Screen Eye',
+      intro: 'Screen vision for the agent: where captures land, how many are kept, and what a call may cost. Changes apply to the next capture — no restart.',
       changed: 'changed',
       reset: 'Reset',
       save: 'Save',
@@ -67,13 +74,13 @@ window.__ModuleLoader__.load({
       locale: 'Language',
       localeHint: 'The language of the Screen Recording onboarding text the tools return.',
       outputDir: 'Capture directory',
-      outputDirHint: 'Where captured PNGs are written. Empty keeps the default under the harness home.',
+      outputDirHint: 'Where captured PNGs are written. Empty uses a "Screen Eye" folder inside the system pictures folder.',
       keepRecent: 'Captures kept',
       keepRecentHint: 'How many of the newest captures stay on disk. 0 keeps everything. Only files this plugin wrote are ever removed.',
       timeoutMs: 'Call budget (ms)',
       timeoutMsHint: 'How long one call may take, the wait for a change included. A single call can raise it further, up to 900000.',
       maxDimension: 'Largest side (px)',
-      maxDimensionHint: 'A capture with a longer side is refused with its size named, not resized. The provider caps a side at 8192.',
+      maxDimensionHint: 'A capture with a longer side is refused with its size named, not resized. Raise it to capture a display larger than this whole.',
       requireImageCapableModel: 'Require a model that can see',
       requireImageCapableModelHint: 'Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see.',
       deleteAfterCommit: 'Delete the PNG after commit',
@@ -81,8 +88,9 @@ window.__ModuleLoader__.load({
     };
 
     const ZH = {
-      name: 'Screen Eye',
-      description: '给 agent 的屏幕视觉：截图落在哪里、保留多少张、一次调用可以花多久。',
+      nav: '屏幕之眼',
+      title: '屏幕之眼',
+      intro: '给 agent 的屏幕视觉：截图落在哪里、保留多少张、一次调用可以花多久。改动对下一次截图生效，不需要重启。',
       changed: '已修改',
       reset: '重置',
       save: '保存',
@@ -95,13 +103,13 @@ window.__ModuleLoader__.load({
       locale: '语言',
       localeHint: '工具返回的「屏幕录制」引导文案所用语言。',
       outputDir: '截图目录',
-      outputDirHint: '截下来的 PNG 存放在哪里。留空则使用 harness 主目录下的默认位置。',
+      outputDirHint: '截下来的 PNG 存放在哪里。留空则使用系统图片文件夹下的「Screen Eye」子目录。',
       keepRecent: '保留截图数量',
       keepRecentHint: '磁盘上保留最新多少张截图。0 表示全部保留。只会删除本插件自己写出的文件。',
       timeoutMs: '调用预算（毫秒）',
       timeoutMsHint: '单次调用最长可以花多久，包含等待画面变化的时间。单次调用还能在此基础上再调高，上限 900000。',
       maxDimension: '最大边长（像素）',
-      maxDimensionHint: '超过这个边长的截图会被拒绝并报出真实尺寸，而不是缩放到上限。provider 对单边上限为 8192。',
+      maxDimensionHint: '超过这个边长的截图会被拒绝并报出真实尺寸，而不是缩放到上限。要整屏截取更大的显示器，就把这里调高。',
       requireImageCapableModel: '要求模型支持图片输入',
       requireImageCapableModelHint: '当调用方模型未声明图片输入时直接拒绝，而不是返回一张它看不见的图。',
       deleteAfterCommit: '提交后删除 PNG',
@@ -123,7 +131,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The fields this card exposes, in the order it draws them.
+     * The fields this page exposes, in the order it draws them.
      *
      * `format` renders the stored value as draft text and `parse` turns draft
      * text back into a write, so those two are the only places that know a
@@ -193,29 +201,13 @@ window.__ModuleLoader__.load({
       },
     ];
 
-    /** The card's own styles: the host's tokens and measurements, our class names. */
+    /** The page's own styles: the host's tokens and measurements, our class names. */
     const CSS = `
-.screye-card{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);border-radius:16px;list-style:none;transition:border-color .16s,background .16s}
-.screye-card:hover{border-color:var(--dsw-alias-label-dimmed)}
-.screye-cardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
-.screye-header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}
-.screye-header:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
-.screye-headText{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
-.screye-name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}
-.screye-description{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
-.screye-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}
-.screye-chevronOpen{transform:rotate(180deg)}
-.screye-pending{flex:none;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5}
-.screye-body{border-top:.5px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}
-.screye-readOnly{color:var(--dsw-alias-label-tertiary);margin:12px 0 0;font-size:12px;line-height:1.5}
-.screye-footer{border-top:.5px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex}
-.screye-failed{min-width:0;color:var(--dsw-alias-label-error);flex:1;margin:0;font-size:12px;line-height:1.5}
-.screye-discard,.screye-save{appearance:none;font:inherit;cursor:pointer;border:1px solid #0000;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}
-.screye-discard{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}
-.screye-discard:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}
-.screye-save{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
-.screye-discard:disabled,.screye-save:disabled{opacity:.4;cursor:default}
-.screye-field{flex-direction:column;gap:6px;padding:12px 0;display:flex}
+.screye-section{max-width:760px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}
+.screye-title{margin:0;font-size:17px;font-weight:600;line-height:1.4;color:var(--dsw-alias-label-primary)}
+.screye-intro{margin:0;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
+.screye-fields{flex-direction:column;display:flex}
+.screye-field{flex-direction:column;gap:6px;padding:14px 0;display:flex}
 .screye-field+.screye-field{border-top:.5px solid var(--dsw-alias-border-l2)}
 .screye-fieldHead{align-items:center;gap:8px;display:flex}
 .screye-label{min-width:0;color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:1.5}
@@ -231,6 +223,20 @@ window.__ModuleLoader__.load({
 .screye-hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}
 .screye-checkRow{align-items:center;gap:10px;display:flex}
 .screye-check{width:16px;height:16px;flex:none;margin:0;accent-color:var(--dsw-alias-brand-primary)}
+.screye-footer{border-top:.5px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex}
+.screye-failed{min-width:0;color:var(--dsw-alias-label-error);flex:1;margin:0;font-size:12px;line-height:1.5}
+.screye-pending{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5;margin-right:auto}
+.screye-discard,.screye-save{appearance:none;font:inherit;cursor:pointer;border:1px solid #0000;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}
+.screye-discard{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}
+.screye-discard:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}
+.screye-save{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
+.screye-discard:disabled,.screye-save:disabled{opacity:.4;cursor:default}
+.screye-readOnly{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}
+/* The nav row: the shell gives an unrecognised section its generic gear, and
+   offers no icon field. Hide that glyph and draw an eye in the same box, as a
+   mask so it inherits the row's own colour in every state. */
+[${NAV_MARKER}] > svg:first-child{display:none}
+[${NAV_MARKER}]::before{content:'';flex:none;width:16px;height:16px;background:currentColor;-webkit-mask:url("${EYE_SVG}") center / contain no-repeat;mask:url("${EYE_SVG}") center / contain no-repeat}
 `;
 
     /** Inject the stylesheet once per document. */
@@ -240,6 +246,46 @@ window.__ModuleLoader__.load({
       style.id = 'dsh-screen-eye-styles';
       style.textContent = CSS;
       document.head.appendChild(style);
+    }
+
+    /**
+     * Mark this plugin's own row in the settings navigation.
+     *
+     * The contract projects no id onto the row and no icon onto the section, so
+     * the row is identified by the label this plugin itself registered — the one
+     * thing about it that is ours. Re-run on DOM changes because the dialog
+     * mounts and unmounts, and because a language switch relabels every row.
+     *
+     * @param labels - the label texts this section can appear under.
+     * @returns a disposer that stops observing and removes the marker.
+     */
+    function registerNavIcon(labels) {
+      const mark = () => {
+        for (const button of document.querySelectorAll('nav button')) {
+          const text = button.textContent?.trim() ?? '';
+          if (labels.includes(text)) button.setAttribute(NAV_MARKER, '');
+          else button.removeAttribute(NAV_MARKER);
+        }
+      };
+      // The observer sees every mutation in the document, and a streaming
+      // conversation mutates constantly: coalescing to one pass per frame keeps
+      // a permanent observer from costing a query per keystroke of output.
+      let scheduled = false;
+      const schedule = () => {
+        if (scheduled) return;
+        scheduled = true;
+        const run = () => { scheduled = false; mark(); };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+        else setTimeout(run, 16);
+      };
+
+      mark();
+      const observer = new MutationObserver(schedule);
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      return () => {
+        observer.disconnect();
+        for (const marked of document.querySelectorAll(`[${NAV_MARKER}]`)) marked.removeAttribute(NAV_MARKER);
+      };
     }
 
     /**
@@ -258,32 +304,29 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The settings card.
+     * The settings page.
      *
      * Holds the staged drafts and writes them on save; everything else is read
      * from the scope, which is the durable document's view. This state is only
      * what has not been written yet.
      *
      * @param props - `scope` (the bound settings scope), `locale` and `t`.
-     * @returns the card, or null while the namespace is not served.
+     * @returns the page, or null while the namespace is not served.
      */
-    function ScreenEyeCard(props) {
+    function ScreenEyeSection(props) {
       const { scope, locale, t } = props;
       const snapshot = useFace(scope);
-      const [open, setOpen] = React.useState(false);
       const [drafts, setDrafts] = React.useState({});
       const [saving, setSaving] = React.useState(false);
       const [failed, setFailed] = React.useState(false);
 
-      React.useEffect(() => { ensureStyles(); }, []);
-
-      // The language can change while the card is open, and the copy below is
+      // The language can change while the page is open, and the copy below is
       // read through the locale face rather than captured, so switching is one
-      // more render and not a stale card.
+      // more render and not a stale page.
       if (locale !== undefined) useFace(locale);
 
-      // A namespace this deployment does not compose leaves no trace, rather
-      // than a disabled card the user cannot act on.
+      // A namespace this deployment does not serve leaves no trace, rather than
+      // a page of controls that could never save.
       if (snapshot.status !== 'ready') return null;
 
       const section = snapshot.value ?? {};
@@ -363,47 +406,31 @@ window.__ModuleLoader__.load({
         },
       }));
 
-      return h('li', { className: open ? 'screye-card screye-cardOpen' : 'screye-card' }, [
-        h('button', {
-          key: 'header',
-          type: 'button',
-          className: 'screye-header',
-          'aria-expanded': open,
-          onClick: () => setOpen(!open),
-        }, [
-          h('span', { key: 'text', className: 'screye-headText' }, [
-            h('span', { key: 'name', className: 'screye-name' }, t('name')),
-            h('span', { key: 'description', className: 'screye-description' }, t('description')),
-          ]),
-          dirty ? h('span', { key: 'pending', className: 'screye-pending' }, t('unsaved')) : null,
-          h('span', {
-            key: 'chevron',
-            className: open ? 'screye-chevron screye-chevronOpen' : 'screye-chevron',
-          }, '⌄'),
+      return h('div', { className: 'screye-section' }, [
+        h('h2', { key: 'title', className: 'screye-title' }, t('title')),
+        h('p', { key: 'intro', className: 'screye-intro' }, t('intro')),
+        h('div', { key: 'fields', className: 'screye-fields' }, rows),
+        writable ? null : h('p', { key: 'readonly', className: 'screye-readOnly' }, t('readOnly')),
+        h('div', { key: 'footer', className: 'screye-footer' }, [
+          failed ? h('p', { key: 'failed', className: 'screye-failed' }, t('saveFailed')) : null,
+          !failed && dirty
+            ? h('p', { key: 'pending', className: 'screye-pending' }, t('unsaved'))
+            : null,
+          h('button', {
+            key: 'discard',
+            type: 'button',
+            className: 'screye-discard',
+            disabled: !dirty || saving,
+            onClick: () => { setDrafts({}); setFailed(false); },
+          }, t('discard')),
+          h('button', {
+            key: 'save',
+            type: 'button',
+            className: 'screye-save',
+            disabled: !writable || !dirty || invalid || saving,
+            onClick: () => { save(); },
+          }, saving ? t('saving') : t('save')),
         ]),
-        open
-          ? h('div', { key: 'body', className: 'screye-body' }, [
-            ...rows,
-            writable ? null : h('p', { key: 'readonly', className: 'screye-readOnly' }, t('readOnly')),
-            h('div', { key: 'footer', className: 'screye-footer' }, [
-              failed ? h('p', { key: 'failed', className: 'screye-failed' }, t('saveFailed')) : null,
-              h('button', {
-                key: 'discard',
-                type: 'button',
-                className: 'screye-discard',
-                disabled: !dirty || saving,
-                onClick: () => { setDrafts({}); setFailed(false); },
-              }, t('discard')),
-              h('button', {
-                key: 'save',
-                type: 'button',
-                className: 'screye-save',
-                disabled: !writable || !dirty || invalid || saving,
-                onClick: () => { save(); },
-              }, saving ? t('saving') : t('save')),
-            ]),
-          ])
-          : null,
       ]);
     }
 
@@ -467,28 +494,42 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Mount the card.
+     * Mount the section.
      * @param ctx - the browser plugin context.
      */
     function apply(ctx) {
       const t = ctx.locale.bind(LOCALE_NS);
+      // The stylesheet carries the nav glyph as well as the page's own layout,
+      // and the nav row exists whether or not the page is open — so it goes in
+      // at mount rather than from the page's first render.
+      ctx.effect(() => { ensureStyles(); }, 'screen-eye: stylesheet');
       // Dictionary registration is an effect of this plugin's fiber, so the
-      // copy goes away with the card rather than outliving it.
+      // copy goes away with the page rather than outliving it.
       ctx.effect(() => {
         const offEn = ctx.locale.register(LOCALE_NS, 'en', EN);
         const offZh = ctx.locale.register(LOCALE_NS, 'zh', ZH);
         return () => { offEn(); offZh(); };
-      }, 'screen-eye: card dictionaries');
+      }, 'screen-eye: page dictionaries');
+
+      ctx.effect(
+        () => registerNavIcon([EN.nav, ZH.nav]),
+        'screen-eye: settings navigation glyph',
+      );
 
       // The settings transport: without it there is no document to read or
-      // write, and a card that could never save would be a control the user
+      // write, and a page that could never save would be a control the user
       // cannot act on.
       const scope = ctx.settingsScope.bind({ namespace: NAMESPACE });
-      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-        name: 'settings.plugin.item',
-        key: NAMESPACE,
+      ctx.slots.inject('settings.section', () => ctx.slots.register({
+        name: 'settings.section',
+        id: NAMESPACE,
+        // After everything the harness ships (general 0, models 10, plugins 15,
+        // agent presets 20): a plugin's page does not push the built-in ones.
+        order: 25,
+        label: () => t('nav'),
+        locale: LOCALE_NS,
         inject: () => ({ scope, locale: ctx.locale, t }),
-      }, ScreenEyeCard));
+      }, ScreenEyeSection));
     }
 
     return {

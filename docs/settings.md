@@ -20,19 +20,36 @@ settings through a reader (`readSettings`) rather than capturing them at mount,
 which is the whole point of the section: a setting that only applied after a
 restart would make the settings page a decoration.
 
-## The card
+## The page
 
-`Settings → Plugins → Screen Eye` shows one card per field:
+`Settings → Screen Eye` — a section of its own in the settings navigation, with
+an eye on the row and the controls on the right.
 
 | field | kind | what it decides |
 | --- | --- | --- |
 | `locale` | `en` / `zh` | the language of the Screen Recording onboarding the tools return |
-| `outputDir` | path | where captured PNGs are written; empty keeps the default under the harness home |
+| `outputDir` | path | where captured PNGs are written; empty uses the default |
 | `keepRecent` | whole number | how many of the newest captures stay on disk; `0` keeps everything |
 | `timeoutMs` | whole number | the budget for one call, wait included; a single call may raise it further, up to 900000 |
 | `maxDimension` | whole number | a capture with a longer side is refused with its size named, not resized |
 | `requireImageCapableModel` | switch | refuse a capture when the calling model declares no image input |
 | `deleteAfterCommit` | switch | delete the PNG once the image is in the attachment store |
+
+Two defaults are worth knowing because they are the ones a user meets first:
+
+- **`outputDir`** is `<pictures>/Screen Eye` — the system pictures folder
+  (`~/Pictures` on both platforms), under a folder of this plugin's own so that
+  fifty screenshots do not land loose among the user's photographs. A machine
+  that has moved or renamed its pictures folder keeps the default until someone
+  points the field at the real path; finding a relocated folder would mean
+  reading the registry on every call, and the honest version of that is a field
+  the user can set.
+- **`maxDimension`** is **4096**, not the store's 8192. 8192 is the limit for a
+  request holding a handful of images; the moment one holds fifteen or more, the
+  provider's per-image side limit drops to 4096 — and a burst can hold hundreds.
+  The consequence is worth stating plainly: **a display wider or taller than
+  4096 px cannot be captured whole at this default** — a 5K panel, say — and the
+  fix is to raise this field, not to capture something that comes back refused.
 
 Edits are **staged and written on save**. Every settings write is a durable,
 revision-fenced document mutation, so a control that committed as it settled
@@ -40,27 +57,34 @@ would turn one keystroke into a write the user never asked for and could not
 preview. A field the user has changed carries a badge and a **Reset** that drops
 their override, letting it fall back to what the plugin was mounted with. A
 namespace this deployment does not serve renders nothing at all, rather than a
-disabled card the user cannot act on.
+page of controls that could never save.
 
 ## How the two halves find each other
 
-The Host half registers the namespace `screen-eye`. The browser half registers a
-card into the settings shell's `settings.plugin.item` slot **keyed by the same
-string**, and the shell pairs them without knowing what either means — the
-contract exists precisely so a plugin distributed outside the harness repository
-can contribute a card. A typo in either place is a card that never appears, with
-no error anywhere to say why, so a self-test reads both and asserts they match
-(`SETTINGS_NAMESPACE`).
+The Host half registers the namespace `screen-eye`. The browser half binds that
+same namespace through `ctx.settingsScope` and registers a `settings.section`
+whose `id` is the namespace. Nothing else links them: a typo on either side is a
+page that renders nothing, with no error anywhere to say why, so a self-test
+reads both and asserts they match (`SETTINGS_NAMESPACE`).
 
-Two constraints shape the browser half, and both are the platform's rather than
-this plugin's:
+Three constraints shape the browser half, and all three are the platform's
+rather than this plugin's:
 
-- **The harness's own card components cannot be imported.** The client
-  bundle-purity gate forbids cross-plugin value imports, and the official
-  `PluginCard` is not addressable anyway — its copy keys are a closed union of
-  the harness's own plugin names. So `client/client.js` draws its own chrome,
-  using the same design tokens (`--dsw-alias-*`) and the same measurements, with
-  its own class names and its own registered dictionaries.
+- **The harness's own components cannot be imported.** The client
+  bundle-purity gate forbids cross-plugin value imports, so `client/client.js`
+  draws its own chrome — the same design tokens (`--dsw-alias-*`), the same
+  measurements, its own class names, and its own dictionaries registered under
+  its own locale namespace.
+- **A section cannot declare an icon.** The `settings.section` contract projects
+  `id`, `order` and `label` and nothing else, and the shell picks a row's glyph
+  from a closed list of built-in ids: anything it does not recognise gets the
+  generic gear. So the row is claimed after it mounts — the plugin marks the nav
+  button carrying its own label, and a stylesheet hides the gear and draws an
+  eye in its place as a `currentColor` mask, which keeps the shell's hover and
+  active colours and its 16px rhythm. The marker is removed on disposal, so the
+  adaptation is HMR-safe, and it depends on nothing but the label the plugin
+  itself supplied. `dsh-better-sidebar` closes the same gap the same way; the day
+  the contract grows an icon field, this becomes one line shorter.
 - **There is no build step.** A client half is a classic script that registers
   itself on `window.__ModuleLoader__.load` and returns a plugin face, which is
   small enough to write directly: the elements are `React.createElement` calls
@@ -71,17 +95,16 @@ this plugin's:
 
 ## Editing the file by hand
 
-The card is a convenience over the document, not a gate in front of it:
+The page is a convenience over the document, not a gate in front of it:
 
 ```yaml
 screen-eye:
   locale: zh
   keepRecent: 20
-  timeoutMs: 600000
+  maxDimension: 5120
 ```
 
-Anything left out falls back to the entry, and anything set to `null`… is not a
-value the schema accepts, so a hand-edited section that fails validation keeps
-the namespace's last good value and warns rather than stranding the running
-plugin. Deleting the section entirely returns the plugin to what it was mounted
-with.
+Anything left out falls back to the entry, and a hand-edited section the schema
+rejects keeps the namespace's last good value and warns rather than stranding the
+running plugin. Deleting the section entirely returns the plugin to what it was
+mounted with.

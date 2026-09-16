@@ -136,15 +136,15 @@ Windows needs none of this — see [Windows](#windows).
 ## Configuration
 
 All keys are optional — and all of them are editable from the harness's own
-settings page, **Settings → Plugins → Screen Eye**, or by hand in
-`~/.dsh/settings.yaml` under `screen-eye:`. Either way an edit reaches the next
-call without a restart, and the plugin's mount entry stays the base that a
-cleared field falls back to. [`docs/settings.md`](docs/settings.md) has the
-three layers, the card, and the two platform constraints behind it.
+settings page, **Settings → Screen Eye**, or by hand in `~/.dsh/settings.yaml`
+under `screen-eye:`. Either way an edit reaches the next call without a restart,
+and the plugin's mount entry stays the base that a cleared field falls back to.
+[`docs/settings.md`](docs/settings.md) has the three layers, the page, and the
+two platform constraints behind it.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `outputDir` | `<DSH home>/screen-eye` | Where captured PNGs are written. |
+| `outputDir` | `<pictures>/Screen Eye` | Where captured PNGs are written — the system pictures folder, in a folder of its own so fifty screenshots do not land among the user's photographs. |
 | `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
 | `timeoutMs` | `300000` | Budget for one whole call, including any `wait_for_change`. The capture gets what the wait did not spend. |
 | `frames` / `interval_ms` | `1` / `200` | Frames per call and the target gap between them. At most 600, which is the provider's per-request image limit rather than a policy here — past it the extra images would be taken and then replaced with a placeholder. Each frame is one image and at most 384 vision tokens (about 380 measured), so the count is a cost decision and it is yours. |
@@ -168,7 +168,7 @@ picture stops changing, so `frames` is an upper bound and the reply says which
 ending happened. `wait_timeout_ms` (default 30000) is how long it waits for the
 motion to start. `until_still: false` opts out, recording the full window
 instead — the right call for a span rather than an event.
-| `maxDimension` | `8192` | Largest side, in pixels, a capture may have. The provider caps an image side at 8192 (4096 once a request carries fifteen or more images) and the attachment store caps it at 8192 as well; a single display never reaches either. A capture over the cap is refused with its size named. |
+| `maxDimension` | `4096` | Largest side, in pixels, a capture may have. 4096 is where the provider's per-image side limit lands once a request carries fifteen or more images, and a burst can carry hundreds. A capture over the cap is refused with its size named rather than resized — so a display larger than this needs the field raised to be captured whole. |
 | `keepRecent` | `50` | How many of the newest captures to keep in `outputDir`. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. `0` keeps everything. |
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |
 | `deleteAfterCommit` | `false` | Delete the PNG once it is committed to the attachment store. Off by default, so the returned path stays re-readable. |

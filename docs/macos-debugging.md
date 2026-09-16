@@ -34,7 +34,7 @@ for a change).
 node test/selftest.mjs
 ```
 
-Expect **134 passed, 0 failed, 0 skipped**. Nothing skips on macOS: the two cases
+Expect **135 passed, 0 failed, 0 skipped**. Nothing skips on macOS: the two cases
 that skip on Windows are the ones about TCC denial and onboarding guidance, and
 they must execute here. If the suite is not green, stop and report the failure —
 nothing below is worth measuring on top of a broken build.
@@ -263,7 +263,7 @@ chat message, and structure it as:
 # macOS findings — <date>, <macOS version>, <hardware>
 
 ## Suite
-134 passed, 0 failed, 0 skipped.
+135 passed, 0 failed, 0 skipped.
 
 ## Step 3 — still detection (the load-bearing assumption)
 stripped equal: <true|false>; raw equal: <true|false>
@@ -306,3 +306,5 @@ measurement that disagrees with one is the most valuable thing this run can prod
 - Windows keeps a PowerShell engine resident and answers a change check in 18ms; the
   numbers in the tables in `docs/motion.md` labelled Windows were all measured on one
   3840x2160 machine at 125% scaling with a second screen at x = -2560.
+
+
