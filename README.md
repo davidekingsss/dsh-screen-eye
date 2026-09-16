@@ -86,8 +86,9 @@ cannot be done programmatically — the TCC databases are SIP-protected and
 
 - it **detects** the denial by attempting a real capture and classifying the
   result, rather than guessing;
-- it **computes the exact executable** that must be granted, from the running
-  host, instead of describing it generically;
+- it **names the entry to look for** — the principle, plus the common cases —
+  because which row holds the grant depends on how DSH was started and cannot be
+  computed from inside the process (see the table further down);
 - it **opens the exact settings pane** on request;
 - and it returns those steps as the tool result, so the agent can hand you a
   fix rather than a stack trace.
@@ -113,18 +114,21 @@ From a local checkout, instead of a published source:
 dsh plugin --profile web add -w link:/path/to/dsh-screen-eye
 ```
 
-The plugin has no build step and no dependencies, so nothing is compiled at
-install time.
+The plugin has no build step and no dependencies of its own, so nothing compiles
+at install time. On macOS a small helper is compiled later, on first capture,
+from source that ships with the plugin — see [How it works](#how-it-works).
 
 ## Grant Screen Recording (macOS, once)
 
 Call `screenshot` once. If permission is missing, the result tells you exactly
 what to do, and `screen_permission` with `action: "guide"` walks through it:
-it checks first, opens the pane only when the grant really is missing, and
-returns the path to add.
+it checks first, opens the pane only when the grant really is missing, and names
+the entry to look for.
 
-**There are three states, and only one of them is "never granted".** All three
-were produced and observed on macOS 26.6.2, because they behave differently:
+### Three states, only one of which is "never granted"
+
+All three were **produced and observed** on macOS 26.6.2, because they behave
+differently:
 
 | state | system prompt | in the list | captures work |
 | --- | --- | --- | --- |
@@ -132,19 +136,34 @@ were produced and observed on macOS 26.6.2, because they behave differently:
 | granted, then switched off | no | yes, switch off | no |
 | removed from the list | **yes**, on the next request | after you open Settings | no |
 
-So the real sequence is **four steps**. Do them in order, and **do not retry in
-between**:
+### The entry is named after the app that started DSH
 
-1. **Watch for the system dialog** — *"「运行 Deepseek Harness」想要录制此电脑的屏幕
-   和音频。" / "…wants to record this computer's screen and audio."* If it appears,
-   click **Open System Settings**: it **adds the app to the list for you**. If it
-   does not appear (started from a terminal, or previously denied), open
-   **System Settings → Privacy & Security → Screen & System Audio Recording**
-   yourself.
-2. **Find the entry in the list.** It may already be there — the dialog in step 1
-   put it there. The list shows **file names, not paths**, so the name to look
-   for is normally `node`; the tool's report gives both that name and the full
-   path.
+**macOS names the entry after the app bundle the request is attributed to** —
+the app that launched the harness, not the harness. Measured on one machine,
+three launchers gave three different names:
+
+| how DSH was started | entry in the list |
+| --- | --- |
+| the Shortcuts droplet (`运行Deepseek Harness.app`) | **`运行 Deepseek Harness`** |
+| a browser | **`Google Chrome`** |
+| a terminal | **`Terminal`** / **`iTerm`** |
+
+So there is **no single correct name to print**. The tool states the principle
+and lists the common cases; all you have to do is **match it in the list**.
+
+> That `运行Deepseek Harness.app` is a macOS Shortcuts droplet
+> (`CFBundleName` is `ShortcutDroplet`). The Shortcut starts the harness
+> detached and then exits, so it never appears in the process tree — the name
+> exists only in the attribution macOS recorded.
+
+### The real sequence: four steps, and no retrying in between
+
+1. **Watch for the system dialog** — *"…wants to record this computer's screen
+   and audio."* If it appears, click **Open System Settings**: it **adds the app
+   to the list for you**. If it does not (started from a terminal, or previously
+   denied), open **System Settings → Privacy & Security → Screen & System Audio
+   Recording** yourself.
+2. **Find the entry for the app you started DSH with** — see the table above.
 3. **Turn its switch on.** ⚠️ **An entry the system added is OFF by default**, and
    **being in the list is not being granted**. This step is yours to do.
 4. Then call the tool again. **No DSH restart is needed** — the grant applies to
@@ -154,9 +173,6 @@ between**:
 > judging, retrying, reporting a failure — is wrong. Until the switch is on, every
 > capture fails the same way, and that is not a fault; it is a sequence that has
 > not finished yet.
-
-If you start the harness from a terminal, granting that terminal application
-instead has the same effect.
 
 > macOS may periodically ask you to re-confirm this permission. Switching the
 > same entry back on is enough.
@@ -247,14 +263,22 @@ cannot save a token, and resizing here would insert one more scale between what
 the model measures in the image and the screen coordinates `region` expects,
 which is the mapping the zoom workflow depends on.
 
-Neither engine ships a binary. On macOS the capture shells out to the system
-`screencapture(1)`, which needs no compiled artefact, is Apple-signed, and
-already uses ScreenCaptureKit internally; a private helper would need
-per-architecture builds and an ad-hoc signature whose hash changes on every
-rebuild, and a changed hash silently invalidates the user's Screen Recording
-grant. On Windows it shells out to Windows PowerShell 5.1 — present on every
+Neither engine ships a binary: each is built on the machine that runs it. On
+macOS the engine of record is the system's `screencapture(1)` — Apple-signed,
+already using ScreenCaptureKit internally, and requiring no build — with a
+resident helper compiled once from `engine.swift` for the speed a per-call
+process cannot reach (a change check costs 22.6ms through the helper against
+55.8ms through the binary). Compiling it rather than shipping it is the same
+reasoning as Windows': a prebuilt binary would need per-architecture builds, a
+fixed deployment target, and an ad-hoc signature whose hash changes on every
+rebuild — and a changed hash silently invalidates the user's Screen Recording
+grant. On Windows the engine is Windows PowerShell 5.1 — present on every
 install — driving `System.Drawing` through a shim compiled in memory for the
 length of one call.
+
+The macOS helper is an optimisation, never a dependency: `screencapture` remains
+the engine of record and every failure except a denial falls back to it, so a
+machine with no Swift toolchain captures exactly as it always did.
 
 The image reaches the model through the same attachment path the built-in
 `read_image` tool uses, so the value is validated, downscaled and replayed
@@ -319,7 +343,9 @@ away; [`docs/windows.md`](docs/windows.md) has the measurements.
 ## Requirements
 
 - macOS or Windows, with the harness's Node runtime. Neither capture path needs
-  an extra package, and neither compiles anything at install time.
+  an extra package. Nothing is compiled at install time; on macOS a small helper
+  is compiled from source on first capture, and the plugin captures without it
+  if no Swift toolchain is present.
 - On macOS, Screen Recording permission for the process running the harness
   (see above). Windows needs no grant.
 - A model route that declares image input. With `requireImageCapableModel`
