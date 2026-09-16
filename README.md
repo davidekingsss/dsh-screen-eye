@@ -321,6 +321,16 @@ release, so an unpinned install resolves to the old one and the import fails.
 run — the self-test on both platforms, loader acceptance in an isolated profile,
 and end-to-end agent turns — and what each result does and does not prove.
 
+[`docs/macos-debugging.md`](docs/macos-debugging.md) is a self-contained runbook
+for verifying the macOS half on a Mac, written to be handed to an agent that has
+no context: eight steps in priority order, each saying what to run, what the
+answer should be, what a deviation would mean, and which numbers to report. The
+first step is the load-bearing one — the macOS still check hashes two captures
+rather than sampling pixels, and that only works if an unchanged screen produces
+identical bytes once the descriptive chunks are off. `tools/motion-fixture.html`
+is the animation it uses: a 300ms transition that fires on its own schedule, so
+nothing has to be clicked while a burst is waiting.
+
 ## License
 
 MIT
