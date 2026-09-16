@@ -1,8 +1,14 @@
 # Market submission for awesome-dsh-plugin.
 #
+# SUBMITTED 2026-09-17 as pull request #5272 — CI green (`check` and
+# `Submission gate`), mergeable, waiting on a maintainer. Do not open a second
+# one; the guide asks for fixes to be pushed to the same branch.
+#
+#   https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5272
+#
 # The contributing guide requires the target repo to be at least 1 day old
-# (checked automatically by CI), so this file is staged here and the PR is
-# opened the day after the repository was created.
+# (checked automatically by CI); the repository was created 2026-09-15 and the
+# PR went in 26 hours later.
 #
 # Open a PR against https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
 # adding exactly one file, named after the repo at:
@@ -18,8 +24,8 @@ category: vision
 description:
   # Quoted because the line contains ": " — unquoted, YAML reads it as a
   # nested key and the submission fails to parse.
-  en: 'Agent screen capture on macOS and Windows: one tool captures the screen and returns the image itself, a burst of frames runs in a single engine call, and on macOS a second tool reports whether Screen Recording is granted and opens the exact settings pane when it is not.'
-  zh: 'macOS 与 Windows 上的 agent 截屏：一个工具截屏并把图片本身返回给模型，连拍在同一 个引擎进程内完成；macOS 上另有一个工具报告屏幕录制授权状态，未授权时直接打开对应的系统设置面板。'
+  en: 'Agent screen capture on macOS and Windows: one tool captures the screen and returns the image itself, so the model sees it without a second call. On Windows a whole burst runs in one engine call; on macOS a resident helper drops a region capture to 13ms and a change check to 23ms. A second tool, macOS only, reports whether Screen Recording is granted and opens the settings pane that fixes it.'
+  zh: 'macOS 与 Windows 上的 agent 截屏：一个工具截屏并把图片本身返回给模型，无需再调第二次。Windows 上整段连拍在同一个引擎进程内完成；macOS 上常驻助手把区域截图降到 13ms、变化检测降到 23ms。另有一个仅 macOS 的工具：报告屏幕录制授权状态，并直接打开用于修复的系统设置面板。'
 # ---------------------------------------------------------------------------
 #
 # Claims in the description, and where each is verifiable in the repo:
