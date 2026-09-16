@@ -2169,6 +2169,56 @@ await test('the package stays installable and publishable', async () => {
   assert.equal(manifest.main, 'index.mjs');
 });
 
+await test('every module the browser half declares as a dependency exists', async (skip) => {
+  // The failure this exists for is silent, and it shipped once: the browser half
+  // declared `@deepseek-ai/dsh-client-ui-slots` among its `dsh.client.inject`
+  // entries, and no such package exists in the deployment. The host, though, is
+  // happy — it scans the profile, finds the bundle, serves it, and the module
+  // even lands in the browser's graph. What does not happen is *materialisation*:
+  // the loader waits for a dependency that will never arrive, so the factory
+  // never runs, the settings section is never registered, and the page simply
+  // has no row. Nothing errors, and nothing appears.
+  //
+  // `slots` is a cordis *service* provided by the runner and the settings shell.
+  // It is reached through the plugin's own `inject: ['slots', ...]`, which is a
+  // different mechanism from this list — this list names client *modules*.
+  //
+  // Resolution is asked of the packages the deployment actually installs, so a
+  // module id that a newer harness has retired is caught here in the checkout
+  // that still has the older one. CI installs only the three packages it pins,
+  // so there it skips rather than failing on an environment it does not have.
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const declared = manifest.dsh?.client?.inject ?? [];
+  assert.ok(Array.isArray(declared), 'dsh.client.inject must be a list');
+
+  const { createRequire } = await import('node:module');
+  const require = createRequire(new URL('../package.json', import.meta.url));
+  try {
+    require.resolve('@deepseek-ai/dsh-client-modules/package.json');
+  } catch {
+    skip('the harness client packages are not installed here, so their module ids cannot be checked');
+    return;
+  }
+
+  for (const spec of declared) {
+    let resolved;
+    try {
+      resolved = require.resolve(`${spec}/package.json`);
+    } catch {
+      assert.fail(
+        `dsh.client.inject names "${spec}", which is not an installed package. The browser half would `
+        + 'never be materialised — the graph would carry it and the section would never register — so '
+        + 'either the id is wrong or it belongs in the plugin\'s own inject list rather than this one.',
+      );
+    }
+    assert.ok(resolved, `${spec} must resolve`);
+  }
+  // And the list has to be non-empty for a plugin that registers a page: an
+  // empty one is how a bundle ends up claiming to depend on nothing and then
+  // reaching for a service that was never brought up.
+  assert.ok(declared.length > 0, 'a page-registering bundle declares the modules it needs');
+});
+
 process.stdout.write('\nthe platform seam\n');
 
 await test('no OS-specific module is reached from outside the seam', async () => {
