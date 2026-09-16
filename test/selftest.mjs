@@ -1457,6 +1457,17 @@ await test('the model is told how to read a screen, not only what this tool does
   assert.match(modeHelp, /"region" captures exactly the rectangle/u);
   assert.match(modeHelp, /one image pixel per screen pixel/u, 'region says why it is the readable one');
   assert.match(tool.parameters.properties.region.description, /screen position of the region it took/u);
+  // The half of the division of labour a measured session got wrong: an
+  // overview is a picture to judge by eye, and reading a coordinate off it is
+  // how a region lands on the row above the one intended. That session spent
+  // three captures to read one line of text. Neither sentence is an order —
+  // the reply names where the region landed, so the model can aim again rather
+  // than being told to distrust its first estimate.
+  assert.match(description, /the overview tells you where to look, and the region tells you what is there/u);
+  assert.match(tool.parameters.properties.region.description, /not a ruler/u);
+  assert.match(tool.parameters.properties.region.description, /aiming twice beats measuring once/u);
+  assert.doesNotMatch(tool.parameters.properties.region.description, /you must|always|never/iu,
+    'the region guidance is not an order either');
 });
 
 await test('the macOS engine is asked for the same rectangle screencapture is', () => {
