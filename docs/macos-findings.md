@@ -262,6 +262,65 @@ origin it was given; they do not assert where the engine believes each screen
 begins, because a test that guessed the arrangement would encode the guess as a
 fact.
 
+A real external monitor could not be tested either: a Sidecar iPad is what was
+available. That is less of a gap than it looks, because the iPad exercises the
+*harder* case — it is scaled 2x, while most external panels are 1x and take the
+simpler branch.
+
+### Why the fix is not iPad-specific
+
+This is worth stating explicitly, because the defects were found with a Sidecar
+display and the question "does this only work for an iPad?" is the right one to
+ask.
+
+The fix leans on three things, none of which knows what kind of display it is
+looking at:
+
+| what it asks | of whom | why any display answers it |
+| --- | --- | --- |
+| `SCDisplay.displayID` | ScreenCaptureKit | a display is a display; there is no tablet variant |
+| `CGDisplayCopyDisplayMode(...).pixelWidth / .width` | CoreGraphics | every display has a mode, and the mode is where the two numbers live |
+| `SCDisplay.frame` | ScreenCaptureKit | the same field the framework uses to composite the desktop |
+
+What the code does *not* do is special-case anything: there is no branch on
+Sidecar, on AirPlay, on `localizedName`, or on a hard-coded size. Both defects
+were arithmetic that happened to be wrong in a way a 1x main display at the
+origin cannot reveal — a missing multiplier, and a coordinate conversion whose
+two spaces coincide only at (0, 0).
+
+The scale factor is also the same in both axes on every display measured
+(`pixelWidth/width == pixelHeight/height`), which is asserted in the source case
+rather than assumed, and the small number of lines involved is deliberate: a
+longer special-case list would be harder to trust, not easier.
+
+### Why a "main display only" mode is not the safe option it looks like
+
+The suggestion that surfaced during this work — a switch that restricts capture
+to the main display, to sidestep a hard adaptation problem — is worth answering
+in the document rather than in a commit message, because the reasoning is not
+obvious and it is the opposite of what it appears to be.
+
+**The main display is the one display where neither defect can occur.** Its
+`frame.min` is (0, 0), so the coordinate conversion makes no difference there,
+and it is 1x, so the scale factor is 1. A main-display-only path would therefore
+be a path that the bugs cannot exercise — which is to say, the least tested code
+in the plugin, offered as the safe one.
+
+And it would not buy anything in the case that matters: a screen that cannot be
+seen is not a screen the agent can read, so restricting capture to the main
+display removes exactly the capability the second screen was attached for.
+
+What already guards the risk is better than a switch:
+
+- a rectangle that does not intersect any display is **refused by name** rather
+  than silently returning a plausible picture of somewhere else, so a wrong
+  arrangement fails loudly;
+- the inventory now reports where each display sits, so a model can see the
+  arrangement it is working in and aim accordingly;
+- the origin is **omitted rather than guessed** when the platform does not report
+  one, because a wrong origin would make every derived coordinate look
+  authoritative.
+
 ## The resident engine
 
 `docs/macos-debugging.md` stated that macOS has no resident helper and that this
