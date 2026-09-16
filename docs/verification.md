@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-124 cases, all passing, on Windows; 2 of them skip themselves there because they
+125 cases, all passing, on Windows; 2 of them skip themselves there because they
 are about the macOS Screen Recording model. The suite runs without a harness:
 the logic modules are imported directly and the tool definitions are exercised
 through a stubbed context.
@@ -53,9 +53,15 @@ What they cover:
 - the ending contract: that a burst which waited for a change ends when the
   picture settles without being asked to, that a photograph of the new state
   and a burst nobody waited for do not, that `until_still: false` restores the
-  full window, that the cap widens to ten only when the caller named neither a
-  count nor a window, and that both endings are described honestly in the
-  envelope the model reads;
+  full window, that the headroom is smaller than the ceiling, and that both
+  endings are described honestly in the envelope the model reads;
+- the cost contract: that the ceiling is the provider's per-request image limit
+  and not a number this plugin invented, that the interval is what settles the
+  frame count when a window is given, and that a caller naming a count gets it up
+  to the ceiling;
+- retention's new ordering: pruning happens once at the start of a call rather
+  than after every frame, so a burst longer than the retention cap still returns
+  paths to files that exist;
 - schema conformance: every shape either tool can return — one capture, a burst,
   a burst that under-delivered, an inventory, an inventory missing a size, and
   each permission outcome — validated against the schema the tool itself
@@ -685,8 +691,67 @@ captured, and the wait timeout was set to 12s against a 30s default, which is th
 parameter that has to cover the user reading a message before triggering
 anything.
 
-## 9. What was reasoned about but not executed
+### 8.5 What a burst is allowed to cost, checked against the deployment
 
+The ten-frame cap this plugin shipped with was its own guess, and the guess was
+wrong. It rested on "the harness allows 20 images per message", which is true of
+one thing and was applied to another. Read out of the installed packages rather
+than assumed:
+
+| claim | where it lives | value |
+| --- | --- | --- |
+| images per provider request | `dsh-llm-deepseek`, `maxImagesPerRequest` | **600** |
+| images per attachment batch | `dsh-attachment`, `validateImageBatch` | 20 |
+| aggregate bytes per batch | same | 200MB |
+| what happens past the request limit | `dsh-llm`, image projection | the image becomes a text placeholder |
+| vision tokens per image | `dsh-llm-deepseek`, `deepSeekImageTokens` | at most **384** |
+| pixels an image is projected to | same, `imagePixelBudget` | 640,000 |
+
+The twenty is a *batch* limit, and this plugin commits one image per call
+(`saveImage`, never `saveImages`), so it never applied here: the ten-frame cap was
+ten times stricter than anything the deployment enforces. The ceiling is now the
+provider's 600, and the decision it used to make on the model's behalf — how many
+images an animation is worth — is stated as arithmetic in the tool's own
+description instead: one image, at most 384 tokens, so ten frames is about 4k and
+sixty is about 23k. A plugin cannot see the conversation a burst lands in; the
+caller can.
+
+Two consequences were fixed with it, both found by reading the same code:
+
+1. **Retention could delete a burst's own frames.** Pruning ran after every frame
+   and kept the newest 50 captures, which was safe while a burst was capped at ten
+   and stops being safe the moment it is not. Pruning now runs once, before the
+   call's files exist, so the directory is still bounded and the paths in the
+   reply still name files. Both halves are tested: the cap holds, and a burst
+   longer than the cap returns five paths that all exist.
+2. **The call's budget was not the caller's.** The harness enforces a tool's
+   declared `timeoutMs` as a hard deadline and *discards the result* when it
+   fires, so a `timeout_ms` above it would have been a promise the plugin could
+   not keep. The tool now declares the ceiling it will accept (15 minutes) and
+   validates the per-call budget against it, and a wait longer than the call's
+   budget is clamped to the budget with the clamp said out loud rather than
+   silently costing the capture its time.
+
+The room this opens was then measured rather than assumed: a thirty-frame burst
+over a 600x400 region, asked for at a 20ms interval, came back as **30 frames at
+32ms spacing covering 928ms in 1.3s**, with every returned path present on disk.
+The cap it replaced would have stopped at ten frames and 290ms — a third of the
+motion, and, worse, a third chosen by the plugin rather than by the caller.
+
+## 9. What was reasoned about but not executed
+- **The macOS half of every recent change.** `watch`/`changed`, the still ending
+  and the shared budget are implemented for macOS and have never been executed
+  there — there is no Mac on this machine. `docs/macos-debugging.md` is the
+  runbook written for the agent that will run them, in priority order, with what
+  each measurement means; the load-bearing assumption it starts with is that two
+  `screencapture` outputs of an unchanged rectangle are byte-identical once their
+  descriptive chunks are stripped, because the still check hashes rather than
+  samples.
+- **A burst at the 600-frame ceiling.** The limit is the provider's and the
+  refusal is tested, but a 600-frame call has never been run: at 4K and a 155ms
+  frame it is a minute and a half of capture and several gigabytes of PNG, and
+  the number is there as a ceiling for the caller's judgement rather than as a
+  shape this plugin recommends.
 - **The client-side settings surface.** None is shipped in this version, so
   there is no browser UI to verify.
 - **A model without image input.** Refused up front; verified by self-test with

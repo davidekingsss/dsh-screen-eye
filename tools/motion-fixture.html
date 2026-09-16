@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Screen Eye motion fixture</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #ffffff;
+    font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #444;
+    overflow: hidden;
+  }
+  #track {
+    position: absolute;
+    left: 4%;
+    right: 4%;
+    top: 30%;
+    height: 220px;
+  }
+  /* One-shot, not a loop: the block moves left to right once per cycle and
+     then holds still, which is what a component transition actually does and
+     what a frame count cannot describe. */
+  #block {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 220px;
+    height: 220px;
+    background: #dc1428;
+    will-change: transform;
+  }
+  #block.moving {
+    transform: translateX(calc(100% * var(--travel)));
+    transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  #status {
+    position: absolute;
+    left: 4%;
+    bottom: 6%;
+    font-variant-numeric: tabular-nums;
+  }
+  code { background: #f2f2f2; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+  <div id="track"><div id="block"></div></div>
+  <div id="status">
+    cycle <span id="cycle">0</span> · moving <span id="phase">no</span> ·
+    the block crosses the track in 300ms, then holds still for 3.7s and goes again.
+    Watch it with <code>wait_for_change: true</code>.
+  </div>
+<script>
+// Self-triggering on purpose. A watcher has to be told to trigger an animation,
+// and on a machine being debugged by an agent there is nobody to click: the
+// fixture fires on its own schedule so the burst can be waiting before it does.
+(() => {
+  const block = document.getElementById('block');
+  const phase = document.getElementById('phase');
+  const cycle = document.getElementById('cycle');
+  let count = 0;
+
+  const travel = () => {
+    // Wider than the block, so the movement is unmistakable in the frames.
+    const track = document.getElementById('track').clientWidth - block.clientWidth;
+    return Math.max(1, track / block.clientWidth);
+  };
+
+  const run = () => {
+    count += 1;
+    cycle.textContent = String(count);
+    block.style.setProperty('--travel', String(travel()));
+    block.classList.remove('moving');
+    // Force a reflow so removing the class is a state the browser has seen;
+    // without it the re-add can be coalesced and nothing animates.
+    void block.offsetWidth;
+    phase.textContent = 'yes';
+    block.classList.add('moving');
+    setTimeout(() => { phase.textContent = 'no'; }, 300);
+  };
+
+  // First run early enough that a caller who opens the page and issues a call
+  // immediately still catches one, then every four seconds.
+  setTimeout(run, 3000);
+  setInterval(run, 4000);
+})();
+</script>
+</body>
+</html>

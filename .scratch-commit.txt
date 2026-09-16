@@ -1,0 +1,43 @@
+Let the model decide what a burst costs, up to the provider's own limit
+
+The ten-frame cap was this plugin's guess, and the guess was wrong. It rested on
+"the harness allows 20 images per message", which is true of one thing — a batch
+passed to saveImages — and was applied to another. This plugin commits one image
+per call, so that twenty never applied to it at all, and the real ceiling is the
+DeepSeek adapter's 600 images per request: past it the harness replaces the extra
+images with a text placeholder, so they would be captured and then not seen.
+
+What actually bounds a sensible burst is the conversation, not a count. One image
+costs at most 384 vision tokens (measured about 380 for a full-screen capture,
+because the adapter projects every image to a 640,000-pixel budget whatever its
+size), so ten frames is about 4k tokens and sixty about 23k. A plugin cannot see
+the conversation a burst will land in; the caller can. The tool therefore states
+the arithmetic in its own description — one image, at most 384 tokens, this is
+what you are spending — and reports what it took, instead of deciding on the
+model's behalf and then reporting a number it chose itself.
+
+Where a count still decides something, it is headroom rather than a plan: a burst
+whose ending is the picture's asks for STILL_HEADROOM_FRAMES (sixty) when the
+caller named only an interval. Sixty rather than six hundred because the cap is
+only ever spent on a picture that never settles, where sixty frames is 23k tokens
+and six hundred would be conversation-ending. A caller that wants more of
+something endless can say so.
+
+Three more things had to move with it:
+
+- the interval is documented as the lever, and duration_ms as a convenience that
+  is explicitly not how a burst is sized — thinking in windows is the wrong way
+  round for both cost and resolution;
+- retention now prunes once at the start of a call rather than after every frame,
+  which was safe while a burst was capped at ten and would otherwise have deleted
+  the beginning of a longer burst and returned paths to files that were gone;
+- timeout_ms is a per-call parameter, because the call's budget is the caller's
+  to set. The harness enforces a tool's declared timeoutMs as a hard deadline and
+  throws the result away when it fires, so the tool declares the ceiling it will
+  accept (15 minutes) and validates against it, and a wait longer than the call's
+  budget is clamped to the budget out loud rather than silently eating the
+  capture's time.
+
+Measured after the change: a thirty-frame burst over a 600x400 region, asked for
+at a 20ms interval, came back as 30 frames at 32ms spacing covering 928ms in
+1.3s, every path present. The old cap stopped at ten frames and 290ms.

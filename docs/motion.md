@@ -55,9 +55,12 @@ substitute for one:
   keeps the coordinate mapping to the screen that `region` relies on.
 - **Full colour.** A GIF's 256-colour palette blurs small text; these do not.
 
-The costs are real and worth stating: each frame is one image against the
-harness's 20-images-per-message budget, which is why a burst is capped at ten,
-and each frame costs what a capture costs, about 380 tokens.
+The costs are real and worth stating: each frame is one image, and one image
+costs at most 384 vision tokens — measured at about 380 for a full-screen capture
+— so the frames are the whole price of a burst. What bounds them is not a count
+this plugin invents but the provider's 600 images per request and the size of the
+conversation they land in; see "What a burst is allowed to cost" below, which is
+also where the ten-frame cap this page used to describe went.
 
 ## Using it well
 
@@ -371,6 +374,62 @@ the default leaves room for the worst case the tool advertises: a 30s wait for
 the trigger, and then a burst that may legitimately run for minutes under
 `until_still` with a long interval.
 
+## What a burst is allowed to cost, and who decides
+
+The first version of this plugin capped a burst at ten frames, on the reasoning
+that the harness allows twenty images per message and a burst should leave room
+for the rest of the conversation. **The reasoning was wrong, and the cap was this
+plugin's own opinion rather than anybody's limit.** Checked against the
+deployment's code:
+
+| limit | value | enforced by | what happens at it |
+| --- | --- | --- | --- |
+| images in one provider request | 600 | `dsh-llm-deepseek` (`maxImagesPerRequest`) | the excess is replaced with a text placeholder — the frames are taken and then not seen |
+| images in one attachment batch | 20 | `dsh-attachment` (`saveImages`) | the batch is refused |
+| aggregate bytes in one batch | 200MB | `dsh-attachment` | the batch is refused |
+| one image's side / pixels / bytes | 8192 / 64M / 20MB | attachment store | that image is refused |
+| vision tokens per image | 384 | the provider's own accounting | — |
+
+The twenty is a *batch* limit, and this plugin saves one image per call
+(`saveImage`, not `saveImages`), so it never applied here at all. The real
+ceiling is the provider's **600 images per request**, and the real cost is 384
+vision tokens per image at most — measured at about 380 for a full-screen
+capture, because the adapter projects every image to a 640,000-pixel budget
+whatever the capture's size.
+
+So the cap is now the provider's 600, and the decision moved to where the
+information is. A plugin cannot see the conversation a burst will land in; the
+model can. Ten frames is about 4k tokens and sixty is about 23k, and which of
+those is worth spending on a particular animation is not a question with a
+platform-independent answer. What the tool does instead of deciding is **say the
+arithmetic in its own description** and report what was taken.
+
+That leaves one place where a count still decides something, and it is worth
+being precise about which: when the picture settles the ending, the count is
+headroom and the caller's silence about it is filled with `STILL_HEADROOM_FRAMES`
+— sixty, which is twelve seconds at a 200ms interval and sixty at a second apart.
+Sixty rather than six hundred because the cap only ever gets spent in one case: a
+picture that never settles. There the ending never comes, the headroom is what
+gets taken, and sixty frames is 23k tokens where six hundred would be
+conversation-ending. A caller that wants more samples of something endless can
+name a count — the ceiling is the provider's, not this plugin's.
+
+### The interval is the lever, not the window
+
+A burst is `frames`, `interval_ms` and `duration_ms`, any two of which determine
+the third — and of the three, the one that decides how much is spent and how well
+the motion is read is **`interval_ms`**. Halving it doubles the frames for the
+same span at double the token cost; doubling it is the reverse. `duration_ms` is
+a convenience for when the window is the thing the caller knows, and it is
+documented as *not* the way to size a burst, because a caller who reaches for it
+is thinking about the span rather than the sampling, which is the wrong way round
+for both cost and resolution.
+
+Nothing in the tool imposes a duration. The burst length is
+`(frames - 1) x interval_ms`, the ending is the picture's when the call waited,
+and the call's only fixed quantity is the budget it may not exceed — `timeout_ms`,
+which is the caller's to set up to the ceiling the tool declares to the harness.
+
 ## Three numbers, any two of which settle the third
 
 A burst is described by how many frames, how far apart, and over how long. The
@@ -391,7 +450,10 @@ So all three are parameters, and **any two determine the third**:
 The second row is the one that matters for cost. Holding the window fixed and
 raising the interval is how a caller asks for a **coarser sample rather than a
 shorter one** — the same motion, watched with fewer images. Since each frame is
-an image and images are what cost, that is the lever.
+an image and images are what cost, that is the lever — and it is why the tool's
+own descriptions lead with `interval_ms` and describe `duration_ms` as a
+convenience for when the window is what you know, rather than as the way to size
+a burst.
 
 Giving all three is refused rather than resolved: a caller who set all three has
 a belief about which wins, and guessing wrong is worse than saying so.
@@ -399,14 +461,16 @@ a belief about which wins, and guessing wrong is worse than saying so.
 A window given alone is sampled at the ordinary frame count rather than at the
 maximum, because the maximum is the most expensive answer and was not asked for
 — unless the call is waiting for a change first, where the ending is the screen's
-to decide and the cap is headroom rather than a plan.
+to decide and the count is headroom rather than a plan.
 
 That also defines the reachable range. The lower bound is the capture cost: ten
 frames at the 47ms floor spans about 0.4s, and no request can resolve motion
-shorter than that. The upper bound is only the interval, so ten frames a second
-apart spans nine seconds and ten frames ten seconds apart spans a minute and a
-half. Between those, any window is expressible — the constraint is sampling
-*resolution*, not duration.
+shorter than that. The upper bound is the interval times the count, and the count
+now runs to the provider's own 600, so the reachable span is wide enough that
+duration stops being the constraint at all: 600 frames a second apart is ten
+minutes, and 600 frames ten seconds apart is most of a day. What remains the
+constraint is sampling *resolution* — how much of the motion a given number of
+images can describe — and that is what `interval_ms` sets.
 
 The consequence below is the useful part for resolution. A short animation — a few hundred
 milliseconds — is not resolved by asking for a finer interval over the whole

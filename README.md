@@ -38,6 +38,17 @@ everything. The reply reports the spacing actually achieved, and says so when
 the request could not be met. [`docs/motion.md`](docs/motion.md) has the
 measurements and the reasoning.
 
+`interval_ms` is the knob that decides both cost and resolution: it is how finely
+the motion is sampled, and the frames are what a burst costs. Nothing here
+imposes a duration — the burst is `(frames - 1) x interval_ms` long, and when the
+call waits for a change the picture decides where it ends — so the only ceiling
+is `timeout_ms`, the budget for the whole call, which defaults to five minutes and
+can be raised per call. The frame ceiling is the provider's own 600 images per
+request rather than a number this plugin picked: each frame is one image and at
+most 384 vision tokens (about 380 measured), which makes the count a cost
+decision the caller is better placed to make than the plugin is, and the tool
+description spells the arithmetic out for it.
+
 Every other call returns **exactly one image**. That is a deliberate constraint rather
 than a limitation of the system: `screencapture` writes *one file per screen*,
 so an unqualified capture on a multi-display Mac would produce several files
@@ -131,7 +142,7 @@ All keys are optional.
 | `outputDir` | `<DSH home>/screen-eye` | Where captured PNGs are written. |
 | `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
 | `timeoutMs` | `300000` | Budget for one whole call, including any `wait_for_change`. The capture gets what the wait did not spend. |
-| `frames` / `interval_ms` | `1` / `200` | Frames per call and the target gap between them. At most 10 frames, because they share the harness's per-message image budget. |
+| `frames` / `interval_ms` | `1` / `200` | Frames per call and the target gap between them. At most 600, which is the provider's per-request image limit rather than a policy here — past it the extra images would be taken and then replaced with a placeholder. Each frame is one image and at most 384 vision tokens (about 380 measured), so the count is a cost decision and it is yours. |
 | `duration_ms` | — | State how long the motion lasts and let the tool size the burst, instead of computing frames and interval yourself. |
 
 `frames`, `interval_ms` and `duration_ms` describe one burst and **any two of

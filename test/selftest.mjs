@@ -28,6 +28,7 @@ import {
   DEFAULT_WAIT_TIMEOUT_MS,
   INTERACTIVE_MODES,
   MAX_BURST_FRAMES,
+  STILL_HEADROOM_FRAMES,
   STILL_CONFIRMATIONS,
   captureScreen,
   planCapture,
@@ -455,9 +456,18 @@ await test('rejects frame counts outside what one call may take', () => {
   for (const frames of [0, -1, 1.5, 'three']) {
     assert.throws(() => planCapture({ frames }), /positive integer/u, `frames=${frames}`);
   }
-  assert.throws(() => planCapture({ frames: MAX_BURST_FRAMES + 1 }), /above the 10/u);
+  // The ceiling is the provider's per-request image limit, not this plugin's
+  // opinion: past it the adapter swaps the extra images for a placeholder, so
+  // refusing is the difference between a refusal and frames nobody can see.
+  assert.throws(() => planCapture({ frames: MAX_BURST_FRAMES + 1 }), /above the 600/u);
   assert.equal(planCapture({ frames: MAX_BURST_FRAMES }).frames, MAX_BURST_FRAMES);
   assert.equal(planCapture({}).frames, 1, 'a plain capture is one frame');
+  // And the room above the ordinary default is real room, not a formality: the
+  // cap the planner raises a self-terminating burst to is well below it.
+  assert.ok(
+    STILL_HEADROOM_FRAMES < MAX_BURST_FRAMES,
+    'the headroom a burst carries is not the ceiling a request carries',
+  );
 });
 
 await test('refuses to repeat an interactive mode automatically', () => {
@@ -695,19 +705,25 @@ await test('every pair of the three burst numbers determines the third', () => {
 });
 
 await test('raising the interval lowers the frame count, which is the cost lever', () => {
-  // Why the interval is exposed at all: within one window, a coarser sample is
-  // fewer images, and images are what cost. Holding the window fixed and raising
-  // the interval must only ever reduce the frame count.
+  // Why the interval is the parameter to think in: within one window, a coarser
+  // sample is fewer images, and images are what cost. Holding the window fixed
+  // and raising the interval must only ever reduce the frame count.
   const counts = [50, 100, 200, 400, 1000].map(
     (interval_ms) => planCapture({ duration_ms: 2000, interval_ms }).frames,
   );
-  assert.deepEqual(counts, [MAX_BURST_FRAMES, MAX_BURST_FRAMES, MAX_BURST_FRAMES, 6, 3]);
+  // Two seconds at each spacing, so the cap is not what decides any of these:
+  // 41, 21, 11, 6 and 3 frames are arithmetic, and only a request dense enough
+  // to exceed the provider's 600-image limit would meet the ceiling instead.
+  assert.deepEqual(counts, [41, 21, 11, 6, 3]);
   for (let index = 1; index < counts.length; index += 1) {
     assert.ok(
       counts[index] <= counts[index - 1],
       `frame count rose from ${counts[index - 1]} to ${counts[index]} as the interval grew`,
     );
   }
+  // The same lever without a window: an interval alone fixes the spacing and
+  // the count is then the model's to spend, up to the provider's ceiling.
+  assert.equal(planCapture({ interval_ms: 500, frames: 120 }).frames, 120);
 });
 
 await test('refuses to over-determine the burst', () => {  // All three at once is the one combination with no defensible reading.
@@ -776,7 +792,7 @@ await test('a burst that waited for the motion ends when the motion does', () =>
   const headroom = planCapture({
     mode: 'region', region: '0,0,10,10', interval_ms: 40, wait_for_change: true,
   });
-  assert.equal(headroom.frames, MAX_BURST_FRAMES, 'the cap is not the plan');
+  assert.equal(headroom.frames, STILL_HEADROOM_FRAMES, 'the cap is not the plan');
   // A caller who named a count or a window has answered it and is left alone.
   assert.equal(
     planCapture({ mode: 'region', region: '0,0,10,10', frames: 4, wait_for_change: true }).frames,
@@ -1454,7 +1470,7 @@ if (!live.ok) {
     assert.equal(attachments.saved.length, 1);
   });
 
-  await test('prunes old captures on disk but never the one just taken', async () => {
+  await test('prunes old captures before a call, so a burst never eats its own frames', async () => {
     // Its own directory: the live captures the cases above already took are
     // newer than the seeds below, so sharing `liveDir` would make the
     // assertion depend on their names rather than on the rule being tested.
@@ -1469,16 +1485,52 @@ if (!live.ok) {
       const value = await tool.execute({ mode: 'region', region: '0,0,16,16' }, stubExec());
 
       const left = (await readdir(pruneDir)).filter(isCaptureName).sort();
-      // The new capture is the newest file, so it is inside the kept window
-      // rather than an extra survivor: the directory ends at the cap.
-      assert.equal(left.length, 2, `expected the cap to hold, saw ${left.length}`);
+      // The directory is brought down to the cap *before* the capture is
+      // written, so the call's own file is added on top of a pruned directory
+      // rather than competing with it. Pruning per frame instead — which is
+      // what a ten-frame cap made safe and a six-hundred-frame one does not —
+      // would delete the beginning of the burst being taken, and the paths in
+      // the reply would name files that no longer exist. The oldest seed is
+      // gone and the newest survives, which is the rule.
+      assert.equal(left.length, 3, `expected the cap plus this call's file, saw ${left.length}`);
       assert.ok(
         left.includes(basename(value.path)),
         'pruning must never delete the capture it just returned',
       );
-      assert.equal(left[0], buildCaptureName(new Date(Date.UTC(2020, 0, 1, 0, 0, 5)), 'abcde5'));
+      assert.ok(
+        !left.includes(buildCaptureName(new Date(Date.UTC(2020, 0, 1, 0, 0, 0)), 'abcde0')),
+        'the oldest capture goes first',
+      );
+      assert.ok(
+        left.includes(buildCaptureName(new Date(Date.UTC(2020, 0, 1, 0, 0, 5)), 'abcde5')),
+        'the newest seed is inside the kept window',
+      );
     } finally {
       await rm(pruneDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('a burst longer than the retention cap keeps every frame it returns', async () => {
+    // The case the per-frame version could not survive: more frames in one call
+    // than retention keeps. Every frame is committed to the attachment store
+    // before the next is written, so the pictures are safe either way — but the
+    // paths are the model's way back to a frame it wants to look at again, and
+    // a path to a file this same call deleted is a lie.
+    const burstDir = await mkdtemp(join(tmpdir(), 'dsh-screen-eye-burst-'));
+    try {
+      const settings = resolveSettings({ ...liveSettings, outputDir: burstDir, keepRecent: 2 });
+      const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), settings);
+      const value = await tool.execute(
+        { mode: 'region', region: '0,0,16,16', frames: 5, interval_ms: 20 },
+        stubExec(),
+      );
+
+      assert.equal(value.frames.length, 5);
+      for (const frame of value.frames) {
+        assert.ok(existsSync(frame.path), `frame path ${frame.path} must still exist`);
+      }
+    } finally {
+      await rm(burstDir, { recursive: true, force: true });
     }
   });
 
