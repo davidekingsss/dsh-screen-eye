@@ -422,7 +422,14 @@ await test('returns a text envelope beside a real image block', () => {
   assert.equal(blocks[1].attachment.mediaType, 'image/png');
 });
 
-await test('reports the downscale multiplier when the store resized', () => {
+await test('names a reduced capture as reduced, and does not invite rescaling it', () => {
+  // This envelope used to say "multiply coordinates by 2.00", which is
+  // arithmetically right and was in practice the wrong instruction: it invites
+  // measuring a feature on a reduced picture and scaling it back up, and the
+  // result lands near the target rather than on it. The multiplier is still
+  // reported — deriving it is pointless work — but the picture is now named as
+  // what it is, and the mode that returns a one-to-one copy is named as the way
+  // to get one.
   const [text] = imageContent({
     path: '/tmp/a.png',
     mode: 'screen',
@@ -436,7 +443,51 @@ await test('reports the downscale multiplier when the store resized', () => {
       originalDimensions: { width: 200, height: 100 },
     },
   });
-  assert.match(text.text, /multiply coordinates by 2\.00/u);
+  assert.match(text.text, /downscaled from 200x100 px by 2\.00x/u);
+  assert.match(text.text, /reduced view of the screen rather than a one-to-one copy/u);
+  assert.match(text.text, /capture type "region"/u, 'the one-to-one alternative is named');
+  assert.match(text.text, /The multiplier is 2\.00\./u, 'the multiplier is still available');
+  assert.doesNotMatch(text.text, /multiply coordinates by/u, 'the rescaling advice is gone');
+});
+
+await test('hands over the screen origin so a coordinate is an addition', () => {
+  // The point of this field: turning a coordinate measured inside the picture
+  // into a screen coordinate must be an addition, not an undo-the-downscale.
+  const [text] = imageContent({
+    path: '/tmp/a.png',
+    mode: 'region',
+    capturedAt: 'now',
+    screenOrigin: { x: 1200, y: 650 },
+    image: { attachmentId: 'a', mediaType: 'image/png', bytes: 1, width: 400, height: 300 },
+  });
+  assert.match(text.text, /<screen-origin x="1200" y="650">/u);
+  assert.match(text.text, /\(1200 \+ px, 650 \+ py\) on screen/u);
+
+  // Absent when the origin is not knowable, because a wrong origin would be
+  // worse than none: it would make every derived coordinate look authoritative.
+  const [without] = imageContent({
+    path: '/tmp/a.png',
+    mode: 'display',
+    display: 2,
+    capturedAt: 'now',
+    image: { attachmentId: 'a', mediaType: 'image/png', bytes: 1, width: 400, height: 300 },
+  });
+  assert.doesNotMatch(without.text, /screen-origin/u);
+
+  // And a burst carries one origin for all its frames, because a burst keeps
+  // one rectangle.
+  const [burst] = imageContent({
+    path: '/tmp/b.png',
+    mode: 'region',
+    capturedAt: 'now',
+    screenOrigin: { x: 10, y: 20 },
+    frames: [
+      { path: '/tmp/b-1.png', capturedAt: 'now', image: { attachmentId: 'b', mediaType: 'image/png', bytes: 1, width: 4, height: 3 } },
+      { path: '/tmp/b-2.png', capturedAt: 'now', image: { attachmentId: 'c', mediaType: 'image/png', bytes: 1, width: 4, height: 3 } },
+    ],
+  });
+  assert.match(burst.text, /<screen-origin x="10" y="20">/u);
+  assert.match(burst.text, /every frame shares/u);
 });
 
 process.stdout.write('\nPNG header\n');
@@ -1375,6 +1426,39 @@ await test('the guide never reports a state it did not observe', async (skip) =>
   }
 });
 
+await test('the model is told how to read a screen, not only what this tool does', () => {
+  // The plugin's whole job is one workflow, and until this text existed nothing
+  // said so: the description covered what a capture is and when to reach for
+  // one, and a caller that had never seen the plugin had no way to know that
+  // reading a screen is done in passes. Measured, the model found the region
+  // mode by trial — a first full-screen capture, then the crop it needed. The
+  // cost is latency, not correctness, which is exactly why it is worth saying.
+  //
+  // Asserted as a shape rather than as a sentence, because the wording is
+  // meant to stay editable: an overview, a one-to-one region, and the
+  // admission that which one applies is the caller's judgement.
+  const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings({}));
+  const description = tool.description;
+  assert.match(description, /two passes/u, 'the two-pass shape is stated');
+  assert.match(description, /overview/u, 'the overview pass is named');
+  assert.match(description, /one image pixel per screen pixel/u, 'the region pass says what makes it readable');
+  // It must not read as an order: the situation is visible to the caller and
+  // not to this text, so the judgement stays with the model.
+  assert.doesNotMatch(description, /you must|always|never/iu, 'the guidance is not an order');
+
+  // And the mode help must not quietly push the overview: it used to call
+  // "screen" the default, while saying nothing about what a region is for.
+  // Read through `properties` because `defineTool` normalises the declaration
+  // into a JSON Schema. Asserted on the mode text alone — other parameters
+  // legitimately say what their own default is, and matching across all of
+  // them would fail on those.
+  const modeHelp = tool.parameters.properties.mode.description;
+  assert.doesNotMatch(modeHelp, /and is the default/u, 'the overview is no longer advertised as the default');
+  assert.match(modeHelp, /"region" captures exactly the rectangle/u);
+  assert.match(modeHelp, /one image pixel per screen pixel/u, 'region says why it is the readable one');
+  assert.match(tool.parameters.properties.region.description, /screen position of the region it took/u);
+});
+
 await test('the macOS engine is asked for the same rectangle screencapture is', () => {
   // The one thing both engines have to agree on, and the one thing whose
   // failure is silent: a request mapped onto the wrong rectangle returns a
@@ -1629,6 +1713,29 @@ if (!live.ok) {
     const value = await tool.execute({ mode: 'region', region: '0,0,320,240' }, stubExec());
     assert.equal(value.mode, 'region');
     assert.equal(attachments.saved.length, 1);
+  });
+
+  await test('the screen origin reaches the tool value, and only when it is known', async () => {
+    // The envelope cases assert the rendering; this asserts the value the tool
+    // actually returns, because a field that never reached the value would
+    // render as nothing and every envelope case would still pass. It needs a
+    // real capture because it asks what the tool does with a real plan.
+    const tool = screenshotTool(stubCtx({ attachments: stubAttachments() }), resolveSettings(liveSettings));
+
+    const region = await tool.execute({ mode: 'region', region: '200,150,400,300' }, stubExec());
+    assert.deepEqual(region.screenOrigin, { x: 200, y: 150 }, 'a region reports its own origin');
+    assert.match(tool.output.render({}, region)[0].text, /<screen-origin x="200" y="150">/u);
+
+    const screen = await tool.execute({ mode: 'screen' }, stubExec());
+    assert.deepEqual(screen.screenOrigin, { x: 0, y: 0 }, 'the main display begins at the origin of region coordinates');
+    assert.match(tool.output.render({}, screen)[0].text, /<screen-origin x="0" y="0">/u);
+
+    // `display` reports none: macOS lists a display's size but not where it
+    // sits, and a guessed origin would be worse than an absent one — it would
+    // make every coordinate derived from the picture look authoritative.
+    const display = await tool.execute({ mode: 'display', display: 1 }, stubExec());
+    assert.equal(display.screenOrigin, undefined, 'an unknown origin is omitted rather than guessed');
+    assert.doesNotMatch(tool.output.render({}, display)[0].text, /screen-origin/u);
   });
 
   await test('a machine with no helper still captures, through screencapture', async () => {
