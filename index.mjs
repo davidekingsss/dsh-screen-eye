@@ -35,7 +35,7 @@ import z from '@deepseek-ai/schemastery';
 import { isSupportedPlatform, platformFor } from './lib/platform.mjs';
 import { screenPermissionTool } from './lib/permission-tool.mjs';
 import { screenshotTool } from './lib/screenshot-tool.mjs';
-import { resolveSettings } from './lib/settings.mjs';
+import { DEFAULT_TIMEOUT_MS, resolveSettings } from './lib/settings.mjs';
 
 /** Cordis plugin name. */
 export const name = 'dsh-screen-eye';
@@ -61,8 +61,10 @@ export const Config = z.object({
     .description('Language of the Screen Recording onboarding text: "en" or "zh".'),
   timeoutMs: z
     .natural()
-    .default(120000)
-    .description('Cooperative time budget for one capture, including interactive modes.'),
+    .default(DEFAULT_TIMEOUT_MS)
+    .description(
+      'Time budget for one whole call, including any wait_for_change. The capture gets what the wait did not spend. See lib/settings.mjs for why the default is what it is.',
+    ),
   keepRecent: z
     .natural()
     .default(50)

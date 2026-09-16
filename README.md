@@ -130,7 +130,7 @@ All keys are optional.
 |---|---|---|
 | `outputDir` | `<DSH home>/screen-eye` | Where captured PNGs are written. |
 | `locale` | `en` | Language of the onboarding text: `en` or `zh`. |
-| `timeoutMs` | `120000` | Cooperative budget for one capture. |
+| `timeoutMs` | `300000` | Budget for one whole call, including any `wait_for_change`. The capture gets what the wait did not spend. |
 | `frames` / `interval_ms` | `1` / `200` | Frames per call and the target gap between them. At most 10 frames, because they share the harness's per-message image budget. |
 | `duration_ms` | — | State how long the motion lasts and let the tool size the burst, instead of computing frames and interval yourself. |
 
@@ -144,7 +144,14 @@ holding the window fixed and **raising `interval_ms`** trades resolution for
 cost — the same motion watched with fewer images — while lowering it spends more
 for a finer sample. A window given alone is sampled at the ordinary frame count,
 not at the maximum, because the maximum is the most expensive answer and was not
-asked for.
+asked for — unless the call is waiting for a change first, where the ending is
+the screen's to decide and the count is headroom.
+
+`wait_for_change: true` also settles *when the burst ends*: it stops once the
+picture stops changing, so `frames` is an upper bound and the reply says which
+ending happened. `wait_timeout_ms` (default 30000) is how long it waits for the
+motion to start. `until_still: false` opts out, recording the full window
+instead — the right call for a span rather than an event.
 | `maxDimension` | `8192` | Largest side, in pixels, a capture may have. The provider caps an image side at 8192 (4096 once a request carries fifteen or more images) and the attachment store caps it at 8192 as well; a single display never reaches either. A capture over the cap is refused with its size named. |
 | `keepRecent` | `50` | How many of the newest captures to keep in `outputDir`. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. `0` keeps everything. |
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |
@@ -245,6 +252,12 @@ away; [`docs/windows.md`](docs/windows.md) has the measurements.
   frames from the moment it moves." On a known 300ms transition the frames began
   **103ms** after it started and **4-5 of 8** landed inside it. macOS has the
   same option with a slower check, because it has no resident helper to ask.
+  The other end is settled by the screen too: a burst that waited for a change
+  ends when the picture settles, so `frames` is an upper bound rather than a
+  guess about how long the motion takes — measured on the same transition, 7
+  frames covering it and stopping there, with 3 of the 10-frame cap unused. The
+  reply says which ending happened, and `until_still: false` records a fixed
+  window instead for a caller who wants a span rather than an event.
 - **Two screens.** Displays are listed main-first with their origins, so a
   `region` on a second screen — including one to the left of the main display,
   where x is negative — addresses the right pixels. Verified on a 3840x2160 main

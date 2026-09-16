@@ -200,8 +200,11 @@ moment it moves. The caller issues the call *before* the user triggers anything,
 which is the one thing the model is actually good at:
 
 ```
-screenshot  mode=region  region=<the component>  frames=8  interval_ms=35  wait_for_change=true
+screenshot  mode=region  region=<the component>  interval_ms=35  wait_for_change=true
 ```
+
+No frame count: with the ending left to the screen there is nothing to size, and
+the cap is only what happens if the motion never stops.
 
 The animation's own start becomes the cue, so alignment stops depending on the
 network or on how fast a model is. Measured on a known 300ms transition,
@@ -296,6 +299,78 @@ message asking them to trigger it, and then trigger it.
 Each frame also comes back with its path, so the model can re-read or crop one
 of them later without asking for the burst again.
 
+## When the burst ends, and why the frame count cannot say it
+
+Everything above settles when a burst *starts*. The harder half is when it
+stops, and the frame count is the wrong instrument for it. A caller who asks for
+eight frames of a 300ms transition gets three that show the motion and five that
+show a screen that has stopped: most of the answer is spent on nothing. A caller
+who asks for three frames of a 900ms transition gets a third of it. Both callers
+picked their number for the same reason — it was the only number available — and
+neither could have known better, because the length of the motion is exactly
+what they were calling to find out.
+
+The only thing that knows when the motion ends is the screen. So the burst keeps
+looking at what it is capturing and ends when the picture settles: two
+consecutive still frames, which is a threshold rather than a formality, because a
+transition can hold still in the middle — an eased step, a pause between two
+phases — and a single still frame would end the recording right there.
+
+**This is implied, not asked for.** A burst that waited for a change is a
+recording of that change; the change ending is where the recording ends. Making
+the caller request it would put the burden back on the one party who cannot know
+whether it is needed, so the rule is: `wait_for_change` plus more than one frame
+means the screen decides the ending. There is nothing to remember.
+
+`frames` becomes an **upper bound and a safety net**. While the motion lasts,
+nothing clamps it: the frames taken are the ones the motion spans. Once the
+motion has stopped, the ending clamps the call immediately rather than letting it
+run out a number somebody guessed. The cap is what happens if the picture never
+settles — a spinner, a video, a screen with a clock on it — and it still costs
+the same ten images it always did, which is why it stays.
+
+That changes what it costs to ask for headroom, and the planner follows:
+a caller who gives an interval and no frame count gets the ten-frame cap rather
+than the ordinary six. Asking for ten costs nothing when the transition ends the
+burst at five, and it is the difference between catching a 700ms animation and
+missing its second half. A caller who named a frame count or a window has already
+answered the question and is left alone.
+
+Measured, on the same known 300ms transition used above, with nothing but
+`interval_ms: 40` and `wait_for_change: true` — no ending parameter at all:
+
+| run | frames | spacing | ended because | block x, in order |
+| --- | --- | --- | --- | --- |
+| the transition, then 2.5s of stillness | 7 | 56ms | the picture settled | 553 → 638 → 812 → 982 → 1037, 1037, 1037 |
+| the same call with `until_still: false` | 10 | 47ms | the frame limit | 10 identical frames |
+
+The first row is the whole design: four frames reading the motion, then three
+that say it has stopped, and the burst ends itself at 2.6s instead of taking the
+six frames it still had left. The second is the other job — a caller who wants a
+span recorded rather than an event, and says so — and there the frames are taken
+to the end of the window whether or not anything moved in them.
+
+The reply always says which ending happened, in the structured field
+(`endedBecause: "still" | "frames"`) and in a sentence, because the two call for
+opposite next steps. "The picture stopped changing after 7 frames, so the burst
+ended there: these frames cover the motion from where it started to where it
+settled" is a finished answer. "The picture was still changing when the 10-frame
+limit ran out, so this recording stops in the middle of the motion" is an
+unfinished one, and it names the fix: a smaller region, where the frames come
+faster and the same cap covers more of the animation. A burst that was not
+watching for a stop says neither, because there is nothing to explain.
+
+### Waiting and capturing draw on one budget
+
+The wait is dead time by construction — it exists for a transition nobody has
+triggered yet — so it and the capture that follows it share one budget rather
+than each holding a copy. `timeout_ms` (five minutes by default) covers the whole
+call, and the capture is given what the wait did not spend. A wait that could eat
+a capture would turn "watch this animation" into "return nothing", which is why
+the default leaves room for the worst case the tool advertises: a 30s wait for
+the trigger, and then a burst that may legitimately run for minutes under
+`until_still` with a long interval.
+
 ## Three numbers, any two of which settle the third
 
 A burst is described by how many frames, how far apart, and over how long. The
@@ -322,8 +397,9 @@ Giving all three is refused rather than resolved: a caller who set all three has
 a belief about which wins, and guessing wrong is worse than saying so.
 
 A window given alone is sampled at the ordinary frame count rather than at the
-maximum, because the maximum is the most expensive answer and was not asked
-for.
+maximum, because the maximum is the most expensive answer and was not asked for
+— unless the call is waiting for a change first, where the ending is the screen's
+to decide and the cap is headroom rather than a plan.
 
 That also defines the reachable range. The lower bound is the capture cost: ten
 frames at the 47ms floor spans about 0.4s, and no request can resolve motion

@@ -7,7 +7,7 @@ about.
 
 ## 1. Self-test — `node test/selftest.mjs`
 
-118 cases, all passing, on Windows; 2 of them skip themselves there because they
+124 cases, all passing, on Windows; 2 of them skip themselves there because they
 are about the macOS Screen Recording model. The suite runs without a harness:
 the logic modules are imported directly and the tool definitions are exercised
 through a stubbed context.
@@ -627,6 +627,57 @@ One consequence worth recording, because it cost a restart to learn: the running
 harness holds the modules it booted with, so a fix to a message lands on the
 next start, not the next call. The live session above showed the old text until
 the harness was restarted again.
+
+### 8.3 A transition that runs once, watched from its start to its end
+
+The two hardest questions about a component animation are *when does it begin*
+and *when is it over*, and neither is answerable from the call. The first is why
+the burst can wait for the picture to move (section 8.1 measured that path); the
+second is why it ends when the picture settles. Both were verified against an
+animation whose truth is known exactly: a 60px block crossing 660px in 300ms,
+drawn by a separate process, triggered 2.5 seconds after the call was issued so
+that the watcher was certainly already waiting.
+
+| run | frames | spacing | `endedBecause` | block x, in order |
+| --- | --- | --- | --- | --- |
+| `interval_ms: 40, wait_for_change: true` | 7 | 56ms | `still` | 553 → 638 → 812 → 982 → 1037, 1037, 1037 |
+| the same, plus `until_still: false` | 10 | 47ms | `frames` | 10 identical frames |
+
+The first run passed **no ending parameter at all**: it began on the transition
+because it was watching for one, took four frames that read the movement, saw
+two still frames after it, and ended itself at 2.6s with six frames of its cap
+unused. The second kept taking frames after the motion had stopped, which is what
+a caller who asked for a window rather than an event wants, and it is the reason
+the opt-out exists.
+
+The frames were read back from their own pixels rather than from the engine's
+account of them — the block's horizontal centre recovered per frame, which is how
+"four frames of motion" is a measurement and not a claim.
+
+One testing trap is worth recording, because it produced a confident wrong
+answer first: the animation window never appeared, so the burst watched an empty
+region and reported a still screen. The cause was launching the animation process
+with `-WindowStyle Hidden` or `windowsHide: true` — Windows applies that to the
+process's **first** `ShowWindow` call, which is the one that shows the form,
+whatever the form asks for. Starting it without those flags made it appear. A
+region that is off by even a little is otherwise a silent failure mode: the
+frames that come back are real, and they show nothing.
+
+### 8.4 The budget a wait and a capture share
+
+A wait is dead time by construction, so it and the capture after it draw on one
+budget: `timeout_ms` covers the whole call, and the platform is given what the
+wait did not spend. The default was raised to five minutes for it, because the
+worst case the tool advertises has to fit inside one — a 30s wait for a user to
+trigger something, and then a burst that may legitimately run for minutes under
+`until_still` with a long interval. A budget that a wait could exhaust would turn
+"watch this animation" into "return nothing", and the failure would look like the
+animation's fault.
+
+Both halves were exercised together: the runs in 8.3 waited 1.2-2.5s and then
+captured, and the wait timeout was set to 12s against a 30s default, which is the
+parameter that has to cover the user reading a message before triggering
+anything.
 
 ## 9. What was reasoned about but not executed
 

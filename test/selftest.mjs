@@ -28,6 +28,7 @@ import {
   DEFAULT_WAIT_TIMEOUT_MS,
   INTERACTIVE_MODES,
   MAX_BURST_FRAMES,
+  STILL_CONFIRMATIONS,
   captureScreen,
   planCapture,
 } from '../lib/capture.mjs';
@@ -45,7 +46,8 @@ import {
   engineScriptPath,
   notesForFrame,
   parseScriptResult,
-  powershellArgs,
+  runOneShot,
+  runScriptPath,
   powershellPath,
   shimCachePath,
   win32,
@@ -554,6 +556,37 @@ await test('a burst that met its target is not accused of missing it', () => {
   }
 });
 
+await test('a burst says why it ended, and both endings are honest', () => {
+  // The model has to be able to tell "this recording ends where the motion
+  // ended" from "this recording was cut off in the middle of it" — they call for
+  // opposite next steps, and the frames alone cannot say which happened.
+  const frame = (n) => ({
+    path: `/tmp/f${n}.png`,
+    capturedAt: 'now',
+    image: { attachmentId: `i${n}`, mediaType: 'image/png', bytes: 1, width: 10, height: 10 },
+  });
+  const settled = formatBurstOutput({
+    mode: 'region', capturedAt: 'now', frames: [frame(1), frame(2), frame(3)],
+    spacingMs: 48, intervalMs: 40, endedBecause: 'still',
+  });
+  assert.match(settled, /stopped changing after 3 frames/u);
+  assert.match(settled, /where it settled/u);
+
+  const cut = formatBurstOutput({
+    mode: 'region', capturedAt: 'now', frames: [frame(1), frame(2)],
+    spacingMs: 48, intervalMs: 40, endedBecause: 'frames',
+  });
+  assert.match(cut, /still changing when the 2-frame limit ran out/u);
+  assert.match(cut, /smaller region/u, 'the fix is worth naming');
+
+  // Nothing was watching for a stop, so there is nothing to explain: a plain
+  // burst must not grow a sentence about an ending nobody asked about.
+  const plain = formatBurstOutput({
+    mode: 'region', capturedAt: 'now', frames: [frame(1), frame(2)], spacingMs: 48, intervalMs: 40,
+  });
+  assert.doesNotMatch(plain, /stopped changing|limit ran out/u);
+});
+
 await test('a single capture keeps its original one-image shape', () => {
   const blocks = imageContent({
     path: '/tmp/a.png',
@@ -709,11 +742,56 @@ await test('waiting for the picture to change is planned, and only with its flag
   );
 });
 
+await test('a burst that waited for the motion ends when the motion does', () => {
+  // The frame count cannot answer "is it over?" — a caller who asks for eight
+  // frames of a 300ms transition gets three that show it and five that show a
+  // stopped screen, and one who asks for three of a 900ms transition gets a
+  // third of it. So a burst that waited for a change is a recording of that
+  // change, and it stops when the picture settles: not a flag to remember, the
+  // meaning of the call.
+  const watching = planCapture({ mode: 'region', region: '0,0,10,10', frames: 4, wait_for_change: true });
+  assert.equal(watching.untilStill, true, 'watching a transition ends with it');
+  assert.equal(watching.stillConfirmations, STILL_CONFIRMATIONS);
+  assert.equal(watching.stillFraction, CHANGE_FRACTION);
+
+  // A photograph of the new state is not a recording and has nothing to end.
+  assert.equal(planCapture({ mode: 'region', region: '0,0,10,10', wait_for_change: true }).untilStill, undefined);
+
+  // A burst nobody waited for was asked for by window or by frame count, so the
+  // caller has already said how long to look; the opt-out is for the caller who
+  // meant a span rather than an event.
+  assert.equal(planCapture({ mode: 'region', region: '0,0,10,10', frames: 4 }).untilStill, undefined);
+  assert.equal(planCapture({ mode: 'region', region: '0,0,10,10', frames: 4, until_still: true }).untilStill, true);
+  assert.equal(
+    planCapture({ mode: 'region', region: '0,0,10,10', frames: 4, wait_for_change: true, until_still: false })
+      .untilStill,
+    undefined,
+    'a fixed window asked for explicitly is left alone',
+  );
+
+  // With an ending the screen decides, the cap is headroom rather than a plan:
+  // the frames taken are the ones the motion spans, so the larger cap costs
+  // nothing on a short transition and is the difference between catching a
+  // 700ms one and missing its second half.
+  const headroom = planCapture({
+    mode: 'region', region: '0,0,10,10', interval_ms: 40, wait_for_change: true,
+  });
+  assert.equal(headroom.frames, MAX_BURST_FRAMES, 'the cap is not the plan');
+  // A caller who named a count or a window has answered it and is left alone.
+  assert.equal(
+    planCapture({ mode: 'region', region: '0,0,10,10', frames: 4, wait_for_change: true }).frames,
+    4,
+  );
+  assert.equal(
+    planCapture({ mode: 'region', region: '0,0,10,10', duration_ms: 400, wait_for_change: true }).frames,
+    DEFAULT_BURST_FRAMES,
+  );
+});
+
 await test('the change check asks how much moved, not whether anything did', () => {
   // The first version waited for any difference at all and fired 461ms into a
   // call watching a still screen, because a cursor blinked. The thresholds are
   // what stop that, so they are asserted as numbers rather than trusted.
-  assert.ok(CHANGE_FRACTION > 0 && CHANGE_FRACTION < 0.05, 'a fraction, and a small one');
   assert.ok(CHANGE_CONFIRMATIONS >= 2, 'one threshold crossing is not evidence');
   // In the engine's own sampling: a 60px block crossing a 1300x600 region moved
   // about 0.8% of the points, and a cursor is worth about 0.1%. The threshold
@@ -1694,9 +1772,8 @@ if (!live.ok) {
       // assuming a visible pointer.
       const plan = planCapture({ mode: 'region', region: '0,0,240,180', include_cursor: true });
       const path = join(liveDir, 'cursor.png');
-      const result = await run(powershellPath(), powershellArgs(captureScript(plan, path)));
-      const parsed = parseScriptResult(result.stdout);
-      assert.equal(parsed.ok, true, result.stderr.trim());
+      const parsed = await runOneShot(captureScript(plan, path));
+      assert.equal(parsed.ok, true);
       assert.ok(
         parsed.cursorDrawn === 0 || parsed.cursorDrawn === -2,
         `the pointer draw reported ${parsed.cursorDrawn}`,
@@ -1711,10 +1788,7 @@ if (!live.ok) {
       // And the same capture without the pointer asked for reports nothing at
       // all, which is what tells the two branches apart.
       const without = planCapture({ mode: 'region', region: '0,0,240,180' });
-      const plain = parseScriptResult((await run(
-        powershellPath(),
-        powershellArgs(captureScript(without, join(liveDir, 'no-cursor.png'))),
-      )).stdout);
+      const plain = await runOneShot(captureScript(without, join(liveDir, 'no-cursor.png')));
       assert.equal(plain.cursorDrawn, null);
       assert.deepEqual(notesForFrame(plain), []);
     });
@@ -2049,15 +2123,33 @@ await test('quotes an output path that would otherwise break the script', () => 
   assert.match(script, /Save-Frame \$rect 'C:\\shots\\it''s mine\\a\.png'/u);
 });
 
-await test('hands the script to PowerShell without a quoting rule to escape from', () => {
+await test('a one-shot script travels as a file, and the file is usable', async () => {
+  // It used to travel as `-EncodedCommand`, which was fine until the script grew
+  // the shim loader, the rectangle resolver and the burst loop: base64 of
+  // UTF-16 doubles the bytes, and ~14KB of script became ~27KB of command line
+  // — close enough to Windows' 32KB ceiling that a capture failed to spawn at
+  // all with ENAMETOOLONG. A file has no such ceiling, and the BOM is what lets
+  // PowerShell read a path that is not ASCII.
   const script = captureScript(planCapture({ mode: 'screen' }), 'C:\\a.png');
-  const args = powershellArgs(script);
-  assert.ok(args.includes('-NonInteractive'), 'the engine must never wait on a prompt');
-  assert.equal(args.at(-2), '-EncodedCommand');
-  // Base64 of UTF-16LE, which is what `-EncodedCommand` decodes: the check is
-  // the round trip, not the encoding choice.
-  const decoded = Buffer.from(args.at(-1), 'base64').toString('utf16le');
-  assert.equal(decoded, script);
+  const path = runScriptPath(script);
+  assert.ok(path.startsWith(tmpdir()));
+  assert.match(path, /dsh-screen-eye-run[\\/]run-[0-9a-f]{16}\.ps1$/u);
+  assert.equal(runScriptPath(script), path, 'the name is a function of the script alone');
+  assert.notEqual(runScriptPath(`${script} `), path, 'and a changed script gets its own file');
+
+  // Written by running one, then read back: what PowerShell will be handed is
+  // what was asserted, byte for byte after the BOM.
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-eye-oneshot-'));
+  try {
+    const real = captureScript(planCapture({ mode: 'region', region: '0,0,32,24' }), join(dir, 'a.png'));
+    const parsed = await runOneShot(real);
+    assert.equal(parsed.ok, true, 'a one-shot script has to actually run');
+    const onDisk = await readFile(runScriptPath(real), 'utf8');
+    assert.equal(onDisk.charCodeAt(0), 0xFEFF, 'the BOM is what makes it readable as UTF-8');
+    assert.equal(onDisk.slice(1), real);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 await test('a burst is one engine call with one path per frame', () => {
