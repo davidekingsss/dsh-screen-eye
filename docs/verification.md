@@ -692,7 +692,7 @@ captured, and the wait timeout was set to 12s against a 30s default, which is th
 parameter that has to cover the user reading a message before triggering
 anything.
 
-### 8.5 The settings surface, and how far it was verified
+### 8.5 The settings surface, and how it is verified
 
 The plugin's settings are now a namespace in the harness's settings document
 rather than only a mount entry, and a browser half puts a page for them in
@@ -731,7 +731,29 @@ rather than only a mount entry, and a browser half puts a page for them in
   images, which a burst can. Both are asserted as resolved values rather than
   as documentation.
 
-### 8.6 What a burst is allowed to cost, checked against the deployment
+### 8.6 The settings page, exercised in the running desktop app
+
+The section above is what the suite can prove; this is what was then done by hand
+in the user's own profile, through the real GUI at `127.0.0.1:3080`, after a
+restart. It is the only part of this document where the evidence is a screenshot
+rather than an assertion, which is why every step is written out.
+
+| step | what was done | what came back |
+| --- | --- | --- |
+| the row | opened Settings | **屏幕之眼** in the navigation, **with an eye drawn on it**, sitting after Agent 预设 and moving nothing else — so the label-matching workaround works in the real app, not only against the stub DOM |
+| the page | clicked the row | title, intro and **seven fields in order**, with the Chinese copy coming from the dictionaries this plugin registers: 语言 `en`, 截图目录 empty, 保留截图数量 `50`, 调用预算 `300000`, 最大边长 **`4096`**, 要求模型支持图片输入 checked, 提交后删除 PNG unchecked |
+| staging | typed a path into 截图目录 | **有未保存的修改** appeared above the buttons, and nothing was written to the document — the staged-save contract, observed |
+| saving | pressed 保存 | `~/.dsh/settings.yaml` gained `screen-eye: {outputDir: …}` |
+| live, no restart | took a screenshot | the file landed in the **new** directory, which did not exist a moment earlier |
+| a path with spaces | pasted `…\Screen Eye Live-Test` from the clipboard | stored with its spaces intact in the document, and the next capture landed in that folder — the first attempt had lost them to synthetic keystrokes through an IME, which the clipboard bypassed and which is not a property of the field |
+| reset | pressed 重置 on the row | the document became `screen-eye: {}`, and the next capture returned to `<pictures>/Screen Eye` — again with no restart |
+
+One claim in this document was wrong before this run and is corrected by it: the
+browser half had never been rendered by a browser. It has now, on the one platform
+this machine has. **The macOS half of everything above is still unexecuted** — it
+is written and self-tested, and `docs/macos-debugging.md` is the runbook for it.
+
+### 8.7 What a burst is allowed to cost, checked against the deployment
 
 The ten-frame cap this plugin shipped with was its own guess, and the guess was
 wrong. It rested on "the harness allows 20 images per message", which is true of
