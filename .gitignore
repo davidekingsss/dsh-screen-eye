@@ -7,8 +7,12 @@
 # symlink, which git would otherwise happily commit.
 node_modules
 
-# Screenshots produced by running the test suite locally.
+# Screenshots produced by running the test suite locally — except the ones the
+# storefront shows. Those live in `assets/` and are named by `screenshots.json`,
+# so they have to be in the tree; the negation works because the pattern above
+# excludes files rather than the directory that holds them.
 *.png
+!assets/*.png
 
 # Scratch space: probes, prototypes and one-off measurement scripts written
 # while working on the platform engines. Nothing here is part of the plugin.
