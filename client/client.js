@@ -498,6 +498,26 @@ window.__ModuleLoader__.load({
      * @param ctx - the browser plugin context.
      */
     function apply(ctx) {
+      // A one-line record of what the browser actually handed this plugin.
+      //
+      // This plugin's dependencies are cordis *services*, reached through the
+      // module object's own `inject` list — which is a different mechanism from
+      // the package-level `dsh.client.inject` list of client modules. When one
+      // of those services is not provided by the running shell, the loader
+      // simply never calls `apply`: no error, no page, and nothing to see. That
+      // is indistinguishable from the bundle never arriving, and the two have
+      // completely different fixes, so the diagnosis has to come from the
+      // browser rather than from a reading of the source. `console.info` rather
+      // than `debug`, because a console hides `debug` by default and the whole
+      // point is that this is seen when someone goes looking.
+      try {
+        console.info(
+          '[screen-eye] loaded · slots=' + typeof ctx.slots
+          + ' locale=' + typeof ctx.locale
+          + ' settingsScope=' + typeof ctx.settingsScope,
+        );
+      } catch { /* a diagnostic must never be the reason a plugin fails */ }
+
       const t = ctx.locale.bind(LOCALE_NS);
       // The stylesheet carries the nav glyph as well as the page's own layout,
       // and the nav row exists whether or not the page is open — so it goes in
