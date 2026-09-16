@@ -169,23 +169,81 @@ and better at the small end.
 
 A burst cannot take its first frame before its engine exists. On macOS the first
 frame lands 50-155ms after the call; on Windows it lands ~380ms after it, which
-is PowerShell starting, the shim loading and WinForms coming up — measured, and
-not removable without a resident helper process.
+is PowerShell starting, the shim loading and WinForms coming up.
 
-For a looping animation (`animation: ... infinite`, a spinner, a progress bar)
-this does not matter at all: the loop comes round again and the burst catches it.
-For a **one-shot** transition — a hover, a panel opening, a page load — a burst
-started after the fact can miss the whole thing, and on macOS it is three to
-eight times less likely to. The honest workflow on Windows is to look first and
-watch second: take a still capture, decide what the motion is and where, then
-burst on that region as the action is repeated. An agent that had to be told to
-look twice is not an autonomous eye, and one that has to be told that timing is
-tight is worse than one that is told the numbers, which is why they are here.
+So Windows now keeps an engine resident instead. It is started on the first
+capture, preloads everything, and then answers in **16-22ms** — which turns the
+table below from "zero frames" into "the whole animation".
 
-The fix for a one-shot animation would be a resident engine process, pre-started
-and waiting, which would take the ~380ms down to a few milliseconds. That is a
-lifecycle to own — an idle timeout, cancellation, a process outliving a crashed
-harness — and it is not in yet.
+## Waiting for the animation instead of racing it
+
+Everything above measures a burst against a screen that is *already* moving —
+which is why the first version of this page could be satisfied by a looping
+animation. A component animation does not loop. It plays once, when the user
+does something, and the arithmetic of catching it is unforgiving:
+
+| when the call is issued | Windows before | Windows with a resident engine | macOS (region) |
+| --- | --- | --- | --- |
+| at the instant it starts | 0 frames | 10 frames | 6 frames |
+| 100ms after | 0 frames | 9 frames | 4 frames |
+| 300ms after | 0 frames | 0 frames | 0 frames |
+
+The middle column is the point. **No amount of start-up speed fixes the last
+row**, because the delay there is not the plugin's: a model has to notice, decide
+and get a tool call scheduled, and that is hundreds of milliseconds at best and
+usually seconds. A plugin cannot outrun a decision, and it should not pretend
+the animation is waiting for it.
+
+So the burst stops racing and starts waiting. `wait_for_change: true` means:
+watch this rectangle, do nothing while it is still, and take the frames from the
+moment it moves. The caller issues the call *before* the user triggers anything,
+which is the one thing the model is actually good at:
+
+```
+screenshot  mode=region  region=<the component>  frames=8  interval_ms=35  wait_for_change=true
+```
+
+The animation's own start becomes the cue, so alignment stops depending on the
+network or on how fast a model is. Measured on a known 300ms transition,
+triggered six seconds after the call was issued:
+
+```
+change detected 103ms after the trigger; 8 frames at 47ms spacing
+  + 103ms  x= 509   <- inside the movement
+  + 151ms  x= 638
+  + 196ms  x= 771
+  + 244ms  x= 899
+  + 291ms  x=1032
+  + 339ms  x=1037  (the transition has finished)
+frames inside the 300ms movement: 4-5 of 8
+```
+
+Four to five frames of a 300ms transition, with the position advancing
+monotonically through them: enough to read direction, distance, duration and
+easing. The 103ms is two poll intervals plus the engine's own round trip — the
+detection has to see a change twice before it believes it, and that confirmation
+is worth the 20ms it costs.
+
+**A change is not "any difference".** The first version of this fired 461ms into
+a call that was watching a completely still screen, because a cursor blinked
+inside the rectangle. What the engine compares is a few thousand sampled pixels,
+and what the wait asks is *how many* of them moved: a quarter of a percent, held
+for two consecutive checks. A 60px block crossing a 1300x600 region moves about
+0.8% of the points; a cursor is worth about 0.1%. The threshold sits between them
+because that is the only place it can sit.
+
+macOS has the same wait, with a weaker instrument. It has no resident helper to
+ask, so each check runs `screencapture` and compares the bytes with their
+descriptive chunks stripped — 47ms for a component-sized region against the
+engine's 18ms — and it can only answer "something moved", which is why the
+confirmation count exists. The maths still works out: a 47ms check plus one
+confirmation puts the first frame inside 150ms of the change, leaving four or
+five frames of a 300ms transition. Without the wait, macOS is in the same
+position as Windows: a call issued 300ms late gets nothing.
+
+The wait gives up rather than guessing. If nothing moves for `wait_timeout_ms`
+(ten seconds by default) the call **fails and says so**, because a burst of a
+screen that never changed is not a weaker answer, it is a wrong one.
 
 ## Three numbers, any two of which settle the third
 

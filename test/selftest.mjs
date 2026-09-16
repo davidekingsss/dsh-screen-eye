@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -20,9 +20,12 @@ import { Config, apply } from '../index.mjs';
 import { buildCaptureName, captureStamp, isCaptureName } from '../lib/capture-name.mjs';
 import {
   CAPTURE_MODES,
+  CHANGE_CONFIRMATIONS,
+  CHANGE_FRACTION,
   CaptureError,
   DEFAULT_BURST_FRAMES,
   DEFAULT_BURST_INTERVAL_MS,
+  DEFAULT_WAIT_TIMEOUT_MS,
   INTERACTIVE_MODES,
   MAX_BURST_FRAMES,
   captureScreen,
@@ -38,6 +41,8 @@ import {
   captureScript,
   displaysFromScreens,
   displaysScript,
+  engineScript,
+  engineScriptPath,
   notesForFrame,
   parseScriptResult,
   powershellArgs,
@@ -672,16 +677,54 @@ await test('raising the interval lowers the frame count, which is the cost lever
   }
 });
 
-await test('refuses to over-determine the burst', () => {
-  // All three at once is the one combination with no defensible reading.
+await test('refuses to over-determine the burst', () => {  // All three at once is the one combination with no defensible reading.
   assert.throws(() => planCapture({ frames: 4, interval_ms: 100, duration_ms: 1000 }), /over-determine/u);
   assert.throws(() => planCapture({ duration_ms: 0 }), /positive integer/u);
   assert.throws(() => planCapture({ duration_ms: 1.5 }), /positive integer/u);
   assert.throws(() => planCapture({ duration_ms: 1000, frames: 1 }), /at least two frames/u);
 });
 
-await test('reports the window covered when one was asked for', () => {
-  const frame = (n) => ({
+await test('waiting for the picture to change is planned, and only with its flag', () => {
+  // A one-shot animation needs the burst to start on the animation, not on the
+  // call — so the wait is an argument, and an argument with a default budget.
+  const plain = planCapture({ mode: 'region', region: '0,0,10,10', frames: 4 });
+  assert.equal(plain.waitForChange, undefined, 'nothing waits unless it was asked to');
+
+  const waiting = planCapture({ mode: 'region', region: '0,0,10,10', frames: 4, wait_for_change: true });
+  assert.deepEqual(waiting.waitForChange, { timeoutMs: DEFAULT_WAIT_TIMEOUT_MS });
+  assert.equal(
+    planCapture({ mode: 'region', region: '0,0,10,10', frames: 4, wait_for_change: true, wait_timeout_ms: 2500 })
+      .waitForChange.timeoutMs,
+    2500,
+  );
+  // A timeout on its own is a caller who believes something is waiting when
+  // nothing is, which is worse than being told the argument was ignored.
+  assert.throws(
+    () => planCapture({ mode: 'region', region: '0,0,10,10', wait_timeout_ms: 500 }),
+    /only meaningful with wait_for_change/u,
+  );
+  assert.throws(
+    () => planCapture({ mode: 'region', region: '0,0,10,10', wait_for_change: true, wait_timeout_ms: 0 }),
+    /positive integer/u,
+  );
+});
+
+await test('the change check asks how much moved, not whether anything did', () => {
+  // The first version waited for any difference at all and fired 461ms into a
+  // call watching a still screen, because a cursor blinked. The thresholds are
+  // what stop that, so they are asserted as numbers rather than trusted.
+  assert.ok(CHANGE_FRACTION > 0 && CHANGE_FRACTION < 0.05, 'a fraction, and a small one');
+  assert.ok(CHANGE_CONFIRMATIONS >= 2, 'one threshold crossing is not evidence');
+  // In the engine's own sampling: a 60px block crossing a 1300x600 region moved
+  // about 0.8% of the points, and a cursor is worth about 0.1%. The threshold
+  // has to sit between them, which is the whole design.
+  const blockFraction = 0.008;
+  const cursorFraction = 0.001;
+  assert.ok(CHANGE_FRACTION < blockFraction, 'a real animation must clear the threshold');
+  assert.ok(CHANGE_FRACTION > cursorFraction, 'and a blinking cursor must not');
+});
+
+await test('reports the window covered when one was asked for', () => {  const frame = (n) => ({
     path: `/tmp/f${n}.png`,
     capturedAt: 'now',
     image: { attachmentId: `i${n}`, mediaType: 'image/png', bytes: 1, width: 10, height: 10 },
@@ -1676,6 +1719,22 @@ if (!live.ok) {
       assert.deepEqual(notesForFrame(plain), []);
     });
 
+    await test('a capture lands in a directory that is not ASCII', async () => {
+      // The engine's request travels as JSON on stdin, and Windows PowerShell
+      // decodes a redirected stdin as ANSI unless told otherwise — so this
+      // failed with "GDI+ a generic error occurred" until the engine declared
+      // its input encoding, for every user with a Chinese path or user name.
+      const unicode = join(liveDir, '中文目录');
+      await mkdir(unicode, { recursive: true });
+      const tool = screenshotTool(
+        stubCtx({ attachments: stubAttachments() }),
+        resolveSettings({ ...liveSettings, outputDir: unicode }),
+      );
+      const value = await tool.execute({ mode: 'region', region: '0,0,64,48' }, stubExec());
+      assert.ok(value.path.includes('中文目录'), `the capture should be where it was asked for: ${value.path}`);
+      assert.deepEqual(pngDimensions(await readFile(value.path)), { width: 64, height: 48 });
+    });
+
     await test('captures every numbered display, including one left of the main', async (skip) => {
       // The multi-display path, which is the one part of the Windows engine a
       // single-screen machine cannot exercise — and the part macOS needed a
@@ -1843,6 +1902,12 @@ await test('every registered platform implements the whole contract', () => {
       assert.equal(typeof platform.captureBurst, 'function', `${id} declares a captureBurst that is not one`);
     }
     assert.ok('permission' in platform, `${id} does not declare permission, not even as null`);
+    // The change check is how a burst catches an animation that runs once, so a
+    // platform that cannot do it must say so — the wait refuses to run rather
+    // than timing out in silence.
+    for (const method of ['watch', 'changed']) {
+      assert.equal(typeof platform[method], 'function', `${id} cannot ${method}() the screen`);
+    }
     if (platform.permission !== null) {
       for (const method of ['probe', 'openSettings', 'grantTarget', 'guidance', 'describeFailure']) {
         assert.equal(
@@ -1922,11 +1987,17 @@ await test('maps each mode onto the rectangle Windows should read', () => {
   assert.match(screen, /\$rect = \$primary\.Bounds/u);
 
   const display = captureScript(planCapture({ mode: 'display', display: 2 }), 'C:\\shots\\a.png');
-  assert.match(display, /\$rect = \$ordered\[2 - 1\]\.Bounds/u);
+  // The mode and its arguments travel as a request object, resolved at run time
+  // by the one resolver all three callers share — the single capture, the burst
+  // and the resident engine — so what is asserted here is that the request
+  // carries the index and that the resolver honours it.
+  assert.match(display, /mode = 'display'; display = 2/u);
+  assert.match(display, /\$rect = \$ordered\[\$index - 1\]\.Bounds/u);
   assert.match(display, /does not exist/u, 'an index no display has must be refused by name');
 
   const region = captureScript(planCapture({ mode: 'region', region: '-1920,0,800,600' }), 'C:\\shots\\a.png');
-  assert.match(region, /New-Object System\.Drawing\.Rectangle -1920, 0, 800, 600/u);
+  assert.match(region, /mode = 'region'; x = -1920; y = 0; w = 800; h = 600/u);
+  assert.match(region, /New-Object System\.Drawing\.Rectangle \(\[int\]\$request\.x\), \(\[int\]\$request\.y\), \(\[int\]\$request\.w\), \(\[int\]\$request\.h\)/u);
   // A rectangle that misses every display is refused with the desktop it
   // missed, because CopyFromScreen returns a black frame rather than failing.
   assert.match(region, /does not overlap any display/u);
@@ -2116,8 +2187,33 @@ await test('the compiled shim is cached, and the cache can only ever help', () =
   assert.equal(shimCachePath(), path, 'the cache path is a function of the source alone');
 });
 
-await test('a platform says whether it can take a whole burst in one call', () => {
-  // The optional half of the contract, asserted in both directions: Windows
+await test('the resident engine is driven the one way PowerShell allows', () => {
+  // Every assertion here is a bug that cost time: the engine's script has to
+  // live in a file (an `-EncodedCommand` keeps stdin for the host, so ReadLine
+  // never returns and the first attempt hung), its stdin has to be declared
+  // UTF-8 (Windows PowerShell decodes a redirected stdin as ANSI, so a Chinese
+  // output path arrived as mojibake and GDI+ failed with a generic error), and
+  // it answers per line with the request's own id so several can be outstanding.
+  const script = engineScript();
+  assert.match(script, /\[Console\]::In\.ReadLine\(\)/u);
+  assert.match(script, /\[Console\]::InputEncoding = New-Object System.Text\.UTF8Encoding/u);
+  assert.match(script, /\[Console\]::OutputEncoding = New-Object System.Text\.UTF8Encoding/u);
+  for (const kind of ['capture', 'burst', 'watch', 'changed', 'quit']) {
+    assert.match(script, new RegExp(`kind -eq '${kind}'`, 'u'), `the engine does not serve ${kind}`);
+  }
+  assert.match(script, /id = \$request\.id/u, 'every reply must carry the request it answers');
+  // The shim is loaded once, at engine start, which is most of why a warm
+  // request costs 18ms instead of 380ms.
+  assert.equal(script.match(/\$nativeSource = @'/gu)?.length, 1);
+  assert.match(script, /ready = \$true/u, 'the engine announces itself before serving');
+
+  const path = engineScriptPath();
+  assert.ok(path.startsWith(tmpdir()));
+  assert.match(path, /dsh-screen-eye-engine[\\/]engine-[0-9a-f]{16}\.ps1$/u);
+  assert.equal(engineScriptPath(), path, 'the script path is a function of the script alone');
+});
+
+await test('a platform says whether it can take a whole burst in one call', () => {  // The optional half of the contract, asserted in both directions: Windows
   // pays about a second of process start per call and takes the burst in one
   // process, while macOS pays per frame and is driven by the frame-by-frame
   // loop — which is the baseline the loop exists to be.

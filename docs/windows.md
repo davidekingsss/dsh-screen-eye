@@ -170,10 +170,11 @@ Measured on the 3840x2160 machine, steady state with the shim cached:
 | loading the compiled shim | 24 ms (against 176 ms to compile it) |
 | WinForms, the capture, the PNG, the black-frame sample | ~210 ms |
 | a complete single capture | **~380 ms** |
-| the first capture on a machine with no cache | 2.6-2.9 s, once — the C# compiler itself is cold |
-| a frame at full screen (3840x2160) | ~150 ms (63-82ms to read, 80-86ms to encode) |
+| a capture through the resident engine, warm | **16-22 ms** |
+| the engine's first capture (it starts, preloads, then answers) | 378 ms |
+| a frame at full screen (3840x2160) | ~155 ms (63-82ms to read, 80-86ms to encode) |
 | a frame at 800x600 | ~16 ms |
-| the display inventory | ~460 ms |
+| the display inventory, with the engine running | ~0 ms — it was preloaded |
 
 The same machine also produces stretches where every capture costs 2.5-3.5s and
 stretches where it costs 380ms, with no change in the code — process start on a
@@ -202,6 +203,48 @@ macOS's rather than behind them — 161ms for a 4K frame against macOS's 155ms,
 and 12-29ms for the small regions against 47-56ms, because macOS pays its ~45ms
 of process start per frame while a Windows burst pays the PowerShell start once.
 `docs/verification.md` has the full table next to the macOS numbers.
+
+## The resident engine, and what it is actually for
+
+Paying 380ms per call is not a speed problem, it is a **correctness** problem for
+one case, and that case is the common one. A component animation runs once, for
+a few hundred milliseconds. A burst cannot take its first frame before its
+engine exists, so a call issued at the instant the animation starts gets its
+first frame 380ms later — after the animation has finished. Measured with a
+known 300ms transition: **zero usable frames**.
+
+So the engine is now started once and kept waiting. It preloads the shim, DPI
+awareness, WinForms and the screen list, announces itself, and then answers one
+JSON request per line of stdin: `16-22ms` per capture, `~0ms` for the inventory
+it already has, `~18ms` for a change check. It shuts itself down after two
+minutes without a request, and it exits when its stdin closes — which is what
+happens when the harness that started it goes away, so a crashed harness does
+not leave a PowerShell process behind. A harness that exits normally kills it on
+the way out.
+
+Every failure path ends in the one-shot path this module had before, so the
+worst case is the old speed rather than no capture: a script file that cannot be
+written, a machine that refuses to start a process, an engine that dies
+mid-request. Only an engine that could not run at all falls back — a refusal
+*from* the engine (a display that does not exist) is an answer, and repeating it
+in another process would only produce it again, more slowly.
+
+Driving a resident PowerShell is also where the sharp edges are, and three of
+them drew blood:
+
+- **The script has to be a file.** `-EncodedCommand` puts the script on the
+  command line, and in that mode stdin belongs to the host: `[Console]::In.ReadLine()`
+  never returns, so the first attempt at this hung until it was killed.
+- **stdin has to be declared UTF-8.** Windows PowerShell decodes a redirected
+  stdin as ANSI, so a request carrying `…\中文目录\shot.png` arrived as mojibake
+  and the save failed with *"GDI+ a generic error occurred"* — for every user
+  with a Chinese path or user name, and only through the engine, because the
+  one-shot path passes its script as UTF-16 base64 and never touches stdin.
+  Found by running the same capture through both paths.
+- **The child has to be unreferenced.** A referenced child keeps the event loop
+  alive, and a resident process that stops the *harness* from exiting is worse
+  than a slow capture. `unref()` on the process and all three streams lets go;
+  the engine notices its stdin closing and leaves.
 
 ### Why PowerShell, and not a smaller tool
 

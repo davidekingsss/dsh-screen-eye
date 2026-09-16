@@ -415,6 +415,46 @@ observed there.
   exist first. A looping animation is unaffected; a one-shot transition that
   began before the call can be missed entirely. `docs/motion.md` has the numbers
   and the workflow that follows from them.
+- **A transition that runs once**, watched end to end. This is the case the
+  earlier animation test did not cover, and the one that matters: a component
+  animation does not loop, so a burst has to start on *the animation*, not on
+  the call.
+
+  The animation is armed and standing still; the burst is issued with
+  `wait_for_change: true`; the "user" triggers it six seconds later.
+
+  | measurement | result |
+  | --- | --- |
+  | the call itself | returned after 5.3s, having waited for the trigger |
+  | change detected, first frame taken | **103-109ms after the trigger** |
+  | frames | 8 at 47ms spacing |
+  | frames inside the 300ms movement | **4-5 of 8** |
+  | positions recovered from the frames | 509 → 638 → 771 → 899 → 1032 |
+
+  Direction, distance and duration are all readable off that sequence. Before
+  the resident engine and the wait, the same experiment gave **zero** usable
+  frames: the first frame arrived 380ms after the trigger, by which time the
+  transition had finished.
+- **Three defects this work found, each of which had to be fixed before the
+  numbers above were possible.**
+
+  1. **The engine hung.** Its script was handed over with `-EncodedCommand`, and
+     in that mode stdin belongs to the host — `[Console]::In.ReadLine()` never
+     returned. The engine is now started with `-File` from a cached script.
+  2. **A Chinese path broke the capture.** Windows PowerShell decodes a
+     redirected stdin as ANSI, so a request carrying `…\中文目录\shot.png` arrived
+     as mojibake and GDI+ failed with *"GDI+ a generic error occurred"* — while
+     the same capture through the one-shot path worked, because that path passes
+     its script as UTF-16 base64 and never touches stdin. Fixed by declaring
+     `[Console]::InputEncoding`; a live case now captures into a `中文目录`, and
+     the ASCII-versus-Unicode split is what identified it (400 fingerprints
+     before a save, on an ASCII path, all succeeded).
+  3. **The child kept the parent alive.** A referenced child holds the event
+     loop open, so a resident engine meant a harness that would not exit — a
+     worse bug than a slow capture. Unreferencing the process and its three
+     streams fixed it: the engine leaves when its stdin closes, which is also
+     how a crashed harness cleans up after itself. Verified: no `powershell`
+     process survives the suite.
 - **DPI is not a detail.** The same panel reported 3072x1728 to a DPI-unaware
   process and 3840x2160 after the shim declared per-monitor-v2 awareness, in that
   order, with the awareness call in between. Windows PowerShell is unaware by
