@@ -11,7 +11,7 @@
 | 工具 | 作用 |
 |---|---|
 | `screenshot` | 截屏，并把图片本身作为 `image` 内容块返回给模型——模型是真的看得见。 |
-| `screen_permission` | 在 macOS 上报告本进程当前是否允许截屏；用 `action: "guide"` 可直接打开对应的系统设置面板并给出需要授权的路径。Windows 没有这项权限可报告，因此该工具在 Windows 上不注册。 |
+| `screen_permission` | 在 macOS 上报告本进程当前是否允许截屏；用 `action: "guide"` 可直接打开对应的系统设置面板，并指出该打开列表里的哪一项。Windows 没有这项权限可报告，因此该工具在 Windows 上不注册。 |
 
 `mode` 决定截什么：`screen`（默认，主显示器）、`display`（按序号指定某一块
 屏幕）、`region`（指定矩形，原点是主屏左上角，因此在主屏左侧或上方的显示器

@@ -14,7 +14,7 @@ Two model-callable tools:
 | Tool | What it does |
 |---|---|
 | `screenshot` | Captures the screen and returns the image itself, as an `image` content block the model can see. |
-| `screen_permission` | On macOS: reports whether this process is currently allowed to capture, and with `action: "guide"` opens the exact System Settings pane and hands over the path to grant. Not registered on Windows, which has no such permission to report. |
+| `screen_permission` | On macOS: reports whether this process is currently allowed to capture, and with `action: "guide"` opens the exact System Settings pane and names the entry to switch on. Not registered on Windows, which has no such permission to report. |
 
 `mode` selects what is captured: `screen` (default, the main display), `display`
 (one display, by index), `region` (a rectangle, whose origin is the top-left of
