@@ -11,6 +11,9 @@
  * Layout:
  * - `lib/screenshot-tool.mjs` — the `screenshot` tool.
  * - `lib/permission-tool.mjs` — the `screen_permission` tool.
+ * - `lib/prompt.mjs`          — what the model is told before it decides to
+ *                               look: the standing system-prompt section and
+ *                               the `screen-eye` skill.
  * - `lib/platform.mjs`        — the platform seam: selects an implementation
  *                               and documents the contract one must meet.
  * - `lib/platform/darwin.mjs` — the macOS implementation.
@@ -34,14 +37,22 @@ import z from '@deepseek-ai/schemastery';
 
 import { isSupportedPlatform, platformFor } from './lib/platform.mjs';
 import { screenPermissionTool } from './lib/permission-tool.mjs';
+import { registerPromptSection, registerSkill } from './lib/prompt.mjs';
 import { screenshotTool } from './lib/screenshot-tool.mjs';
 import { DEFAULT_TIMEOUT_MS, resolveSettings } from './lib/settings.mjs';
 
 /** Cordis plugin name. */
 export const name = 'dsh-screen-eye';
 
-/** This plugin contributes tools and needs nothing else to load. */
-export const inject = ['tools'];
+/**
+ * This plugin contributes tools and a prompt section.
+ *
+ * `systemPrompt` is a hard dependency because the section is not optional
+ * decoration: without it the plugin's tools are defined but never chosen, which
+ * is the failure this plugin was measured having. The registry is part of every
+ * composition that has an agent in it.
+ */
+export const inject = ['tools', 'systemPrompt'];
 
 /**
  * Settings namespace this plugin owns.
@@ -100,6 +111,12 @@ export const Config = z.object({
     .description(
       'Delete the PNG once it is committed to the attachment store. Off by default so the returned path stays re-readable.',
     ),
+  announceCapability: z
+    .boolean()
+    .default(true)
+    .description(
+      'Tell the model, in the system prompt, that it can look at the screen, and register the screen-eye skill. Off removes the announcement and leaves the tools working. The standing line follows the switch immediately; the skill follows it as it stood at mount, because a skill registration cannot be walked back.',
+    ),
 });
 
 /**
@@ -124,16 +141,63 @@ export const Config = z.object({
  * @param definition - the tool definition to register.
  * @param what - the tool name, for the message.
  * @param issues - collects failures for `screen_permission` to report.
+ * @returns true, or false when another plugin already claimed that name.
  */
 function registerTool(ctx, log, definition, what, issues) {
   try {
     ctx.tools.register(definition);
+    return true;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    const message = `the ${what} tool is unavailable: ${detail}`;
-    issues.push(message);
-    log.error('%s — another plugin may already register that name.', message);
+    recordFailure(log, issues, `the ${what} tool is unavailable: ${detail}`);
+    return false;
   }
+}
+
+/**
+ * Record a mount failure on every channel this plugin has.
+ *
+ * The log is for whoever reads the console and the `issues` array is for the
+ * agent, because the harness keeps no log file: a canary written at `error`
+ * level does not appear in `dsh web`'s output, so a plugin that failed to
+ * register would otherwise look exactly like one that is working.
+ *
+ * The trailing sentence is written for the likely cause rather than every
+ * cause. A section name is namespaced and a taken one means a second copy of
+ * this plugin is mounted, which is the same story as a taken tool name and the
+ * same fix.
+ *
+ * @param log - a named logger.
+ * @param issues - collects failures for `screen_permission` to report.
+ * @param message - what failed, phrased for a reader who sees only this line.
+ */
+function recordFailure(log, issues, message) {
+  issues.push(message);
+  log.error('%s — another plugin may already register that name.', message);
+}
+
+/**
+ * Announce the capability, that being the half of a tool that decides whether
+ * it is ever called.
+ *
+ * Registered next to the tool rather than once at mount, so the standing line
+ * exists exactly when there is something behind it. A deployment with no
+ * attachment store, or a calling model that cannot see images, gets no capture
+ * tool and therefore no sentence claiming one.
+ *
+ * @param ctx - the registration scope.
+ * @param log - a named logger.
+ * @param readSettings - reads the current plugin settings.
+ * @param issues - collects failures for `screen_permission` to report.
+ */
+function registerAnnouncement(ctx, log, readSettings, issues) {
+  try {
+    registerPromptSection(ctx, readSettings);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    recordFailure(log, issues, `the screen-eye prompt section is unavailable: ${detail}`);
+  }
+  registerSkill(ctx, log, readSettings().announceCapability);
 }
 
 /**
@@ -209,7 +273,19 @@ export function apply(ctx, config = {}) {
   // without one there is nowhere to commit the image, and handing back a bare
   // path would defeat the point of the tool.
   ctx.inject(['attachments'], (imageCtx) => {
-    registerTool(imageCtx, log, screenshotTool(imageCtx, readSettings, log), 'screenshot', issues);
+    const mounted = registerTool(
+      imageCtx,
+      log,
+      screenshotTool(imageCtx, readSettings, log),
+      'screenshot',
+      issues,
+    );
+    // Paired with the tool on purpose. A schema answers "how do I call this"
+    // only for a caller that already decided to look it up; the section is what
+    // puts the capability in front of the model while it is still choosing.
+    // Announcing it where the tool did not mount would advertise a call that
+    // returns nothing.
+    if (mounted) registerAnnouncement(imageCtx, log, readSettings, issues);
   });
 
   log.info('mounted: captures land in %s', readSettings().outputDir);

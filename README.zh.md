@@ -184,6 +184,7 @@ Screen Eye**（左侧独立一项，眼睛图标），或者直接手改 `~/.dsh
 | `keepRecent` | `50` | `outputDir` 里保留的最新截图数量。一张截图是几 MB 的 PNG，而用眼睛的 agent 会截很多张，所以这个目录默认是有上限的。设为 `0` 表示全部保留。 |
 | `requireImageCapableModel` | `true` | 当调用方模型未声明图片输入时直接拒绝，而不是返回一张它看不见的图。 |
 | `deleteAfterCommit` | `false` | 提交到附件存储后删除 PNG。默认关闭，以便返回的路径可再次读取。 |
+| `announceCapability` | `true` | 在系统提示词里放一句常驻说明，告诉 agent 它能看屏幕，并注册 `screen-eye` 技能。关掉则工具照常定义但不作宣告。见[让模型知道自己有眼睛](#让模型知道自己有眼睛)。 |
 
 提交到存储时会**去掉**那些会让它无法无损保存的记录。在 macOS 上就是去掉
 `screencapture` 给每张截图附带的 ICC 描述文件、EXIF 与 iTXt 记录，而磁盘上的
@@ -237,6 +238,45 @@ macOS 助手是**优化项而非依赖**：`screencapture` 始终是正式引擎
 
 图片通过与内置 `read_image` 完全相同的附件通道抵达模型，因此其校验、降采样与
 会话回放行为与任何其他图片一致。
+
+## 让模型知道自己有眼睛
+
+工具抵达模型有两条互不相通的通路：每次请求都会带的 schema，和系统提示词里的常驻说明。
+schema 回答的是「这个工具怎么调」，而只有**已经决定去查它**的调用方才会读到；模型还在
+决定做什么的时候，没有任何东西会读 schema。只带 schema 的插件，就是模型只能靠猜的插件。
+
+这一点在本插件身上是实测出来的，不是推测。本机会话库全部 60 个会话中，**54 个会话提到
+`screenshot` 恰好一次，且全部是同一句**——Web 界面的「the browser provides no implicit
+DOM, route, or screenshot context」；而真正调用过该工具的只有 9 个会话，其中 6 个是开发
+和测试本插件的会话：2 个在本仓库里，4 个在首个 commit 落地当天的临时目录里。另外 3 个
+会话是拿它做自己的事。提示词里一片沉默，工具就没人去够。
+
+所以插件会在它所描述的工具旁边注册一个 section：
+
+> This deployment can see the screen: capture it with the screenshot tool and
+> the picture comes back in that same call, so no read_image step follows. Reach
+> for it whenever the answer is on screen rather than in a file — checking your
+> own UI work, reading a running app, a dialog, an error, or anything visual you
+> cannot read out of the workspace. A burst of frames records motion instead. A
+> capture can need Screen Recording permission; screen_permission reports
+> whether it is granted and opens the pane that grants it.
+
+其中有四点是有意为之：
+
+- **只在工具真的挂载成功时才注册。** 没有附件存储的部署不会注册截图工具，而此时提示词
+  里若宣称可以截图，只会让模型去调一个返回空的东西。
+- **最后一句是按平台问出来的。** Windows 不注册 `screen_permission`，也没有授权可报告，
+  所以那句授权说明在那里不存在。这个问题问的是引擎注册表，与 `apply()` 问的是同一个。
+- **技能是长版本。** `screen-eye` 技能承载模式对照表、两遍读屏流程、缩放屏对坐标意味着
+  什么，以及什么都拿不到时怎么办；它走运行时注册，所以「安装插件」就是全部安装动作，
+  也不存在一个会与描述它的代码脱节的技能文件。
+- **`announceCapability: false` 去掉常驻说明**，而且可以改回来、无需重启：它的文本是每次
+  组装时求值的 provider，不是挂载时定死的字符串。技能注册无法撤回，所以那一个以挂载时的
+  设置为准。
+
+保留工具、去掉常驻说明是一种受支持的部署方式，不是降级——如果你那边的说明文字读起来
+不对，这就是那个开关。没有「连工具一起关掉」的开关，因为一个存在的意义就是让 agent
+自己去调工具的插件，把它藏起来并不会让它变得更好。
 
 ## 平台支持
 

@@ -85,6 +85,8 @@ window.__ModuleLoader__.load({
       requireImageCapableModelHint: 'Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see.',
       deleteAfterCommit: 'Delete the PNG after commit',
       deleteAfterCommitHint: 'Delete the file once the image is in the attachment store. Off by default so the returned path stays re-readable.',
+      announceCapability: 'Tell the model it can look',
+      announceCapabilityHint: 'Put a standing line in the system prompt saying the agent can see the screen, and register the screen-eye skill. Off leaves the tools working but unannounced.',
     };
 
     const ZH = {
@@ -114,6 +116,8 @@ window.__ModuleLoader__.load({
       requireImageCapableModelHint: '当调用方模型未声明图片输入时直接拒绝，而不是返回一张它看不见的图。',
       deleteAfterCommit: '提交后删除 PNG',
       deleteAfterCommitHint: '图片进入附件存储后删除本地文件。默认关闭，以便返回的路径仍可再次读取。',
+      announceCapability: '告诉模型它可以看屏幕',
+      announceCapabilityHint: '在系统提示词里放一句常驻说明，告诉 agent 它能看屏幕，并注册 screen-eye 技能。关闭后工具照常工作，只是不作宣告。',
     };
 
     /**
@@ -197,6 +201,16 @@ window.__ModuleLoader__.load({
         hint: 'deleteAfterCommitHint',
         kind: 'boolean',
         format: (value) => (value === true ? 'true' : 'false'),
+        parse: (text) => ({ kind: 'set', value: text === 'true' }),
+      },
+      {
+        field: 'announceCapability',
+        label: 'announceCapability',
+        hint: 'announceCapabilityHint',
+        kind: 'boolean',
+        // Default-on, so the draft spells an unset value as "true" rather than
+        // as "false": the row shows what the plugin will actually do.
+        format: (value) => (value === false ? 'false' : 'true'),
         parse: (text) => ({ kind: 'set', value: text === 'true' }),
       },
     ];

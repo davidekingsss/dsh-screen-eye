@@ -3045,10 +3045,16 @@ function wiringCtx(options = {}) {
   const registered = [];
   const definitions = [];
   const errors = [];
+  const warnings = [];
   const sections = [];
+  const promptSections = [];
+  const registeredSkills = [];
   const logger = Object.assign(() => logger, {
     info() {},
-    warn() {},
+    warn(format, ...args) {
+      let index = 0;
+      warnings.push(String(format).replace(/%s/gu, () => String(args[index++])));
+    },
     error(format, ...args) {
       // Substitute like the real logger does, so a case asserts the message a
       // user would read rather than the raw format string.
@@ -3061,6 +3067,37 @@ function wiringCtx(options = {}) {
     : options.settings ?? {
       installSection(owner, ns, schema, entry, hooks) {
         sections.push({ owner, ns, schema, entry, hooks });
+      },
+    };
+  // The orders the installed harness hands out for the two anchors a case
+  // reads, at the values it uses. Written as literals rather than imported,
+  // because the point of the anchor is that it moves with the registry: a case
+  // that imported the registry could not fail if the registry moved.
+  const orders = { TOOL_WEB_FETCH: 2100, TOOL_LSP: 2200 };
+  const systemPrompt = options.systemPrompt === null
+    ? undefined
+    : options.systemPrompt ?? {
+      getSectionOrder: (orderName) => orders[orderName],
+      section(section) {
+        if (options.sectionCollision === section.name) {
+          throw new Error(`prompt section "${section.name}" is already registered`);
+        }
+        promptSections.push(section);
+        return () => {
+          const at = promptSections.indexOf(section);
+          if (at >= 0) promptSections.splice(at, 1);
+        };
+      },
+    };
+  const skills = options.skills === null
+    ? undefined
+    : options.skills ?? {
+      register(skill) {
+        if (options.skillCollision === skill.name) {
+          throw new Error(`runtime skill "${skill.name}" is already registered`);
+        }
+        registeredSkills.push(skill);
+        return () => {};
       },
     };
   const ctx = {
@@ -3076,17 +3113,43 @@ function wiringCtx(options = {}) {
       },
     },
     settings,
+    systemPrompt,
+    skills,
+    // Cordis runs the callback and adopts what it returns; the stub runs the
+    // callback and hands the disposer back, which is what lets a case assert
+    // both directions of a registration.
+    effect(execute) {
+      return execute();
+    },
     get() {
       // No attachment store and no llm route: enough for the tool to mount,
       // and the absence is what the wiring cases assert against.
       return undefined;
     },
     inject(services, callback) {
-      const available = { tools: ctx.tools, attachments: options.attachments ?? {}, settings };
-      if (services.every((service) => available[service] !== undefined)) callback(ctx);
+      // Injected services arrive as properties of the scope handed to the
+      // callback, which is why the tools are registered through `ctx.tools`
+      // in `apply()` and the skill through `skillCtx.skills`. A stub that
+      // handed back a bare object would test a contract cordis does not have.
+      //
+      // Absence is spelled by leaving a service out of `absent`, because a
+      // value in the options cannot say it: `attachments: null` reaches this
+      // line as null and `null ?? {}` is `{}`, which is exactly what the
+      // default is. A case that wants no attachment store names it here.
+      const absent = new Set(options.absent ?? []);
+      const available = {
+        tools: ctx.tools,
+        attachments: options.attachments ?? {},
+        settings,
+        skills,
+      };
+      for (const service of services) {
+        if (absent.has(service) || available[service] === undefined) return;
+      }
+      callback(ctx);
     },
   };
-  return { ctx, registered, definitions, errors, sections };
+  return { ctx, registered, definitions, errors, warnings, sections, promptSections, registeredSkills };
 }
 
 await test('apply() offers its settings as a namespace, based on the mounted entry', async () => {
@@ -3290,6 +3353,180 @@ await test('apply() registers nothing on a host with no engine', async () => {
     const { ctx, registered } = wiringCtx();
     apply(ctx, {});
     assert.deepEqual(registered, [], 'no capture tool may exist without a capture engine');
+  });
+});
+
+process.stdout.write('\nannouncing the capability\n');
+
+await test('the standing line is registered beside the tool it describes', async () => {
+  // The measured failure this whole module exists for: a tool defined and sent
+  // every request, and a model that never chose it, because nothing in the
+  // system prompt said the capability was there. Of the sixty sessions in the
+  // local store, fifty-four mention `screenshot` exactly once — inside the Web
+  // surface's "no implicit DOM, route, or screenshot context".
+  await onPlatform('darwin', () => {
+    const { ctx, promptSections } = wiringCtx();
+    apply(ctx, {});
+    assert.equal(promptSections.length, 1, 'one standing line, not a paragraph per mode');
+    const [section] = promptSections;
+    assert.equal(section.name, 'tool:screen-eye');
+    // Anchored to the last first-party tool-guidance order rather than a
+    // literal: a number copied out of another package goes stale when that
+    // package renumbers, and the gap to the next section is 100 wide.
+    assert.equal(section.order, 2100 + 50, 'inside the tool-guidance block');
+    assert.ok(section.order > 2100 && section.order < 2200, 'between web_fetch and lsp');
+  });
+});
+
+await test('the line names the tool, the one-call shape, and the consent tool', async () => {
+  // Asserted as the facts a caller plans with rather than as sentences: the
+  // wording stays editable, and what must not go missing is the part that
+  // changes the plan — the image arrives in the same call, so looking is one
+  // step and not two.
+  await onPlatform('darwin', () => {
+    const { ctx, promptSections } = wiringCtx();
+    apply(ctx, {});
+    const text = promptSections[0].text();
+    assert.match(text, /screenshot/u, 'names the tool to call');
+    assert.match(text, /screen_permission/u, 'names the tool that answers the grant question');
+    assert.match(text, /same call/u, 'says the picture comes back without a second step');
+    assert.match(text, /read_image/u, 'and says which of the two reading tools this is');
+    assert.match(text, /Screen Recording/u, 'names the macOS requirement rather than assuming it');
+    // Word-bounded: a bare /never/ matches "whenever", which is how a scan of
+    // this file's own prose once reported a prohibition that was not there.
+    assert.doesNotMatch(text, /\b(you must|always|never)\b/iu, 'the line is not an order');
+    assert.doesNotMatch(text, /is the default/u, 'and it is not mode guidance');
+  });
+});
+
+await test('the line promises no consent tool on a platform that has none', async () => {
+  // A standing line has to be true where it is registered. Windows has no
+  // grant to report and registers no `screen_permission`, so a sentence
+  // pointing at one would send the model after a tool that is not there.
+  await onPlatform('win32', () => {
+    const { ctx, promptSections } = wiringCtx();
+    apply(ctx, {});
+    const text = promptSections[0].text();
+    assert.match(text, /screenshot/u);
+    assert.doesNotMatch(text, /screen_permission/u, 'no pointer to a tool this platform lacks');
+    assert.doesNotMatch(text, /Screen Recording/u, 'and no macOS-only requirement');
+  });
+});
+
+await test('the line can be switched off, and switches back without a restart', async () => {
+  // The text is a provider rather than a string so that this is true: it is
+  // evaluated at each assembly and reads the settings as they stand then.
+  // Registering conditionally would have frozen the decision at mount time,
+  // which is the one moment the setting cannot yet have been edited.
+  await onPlatform('darwin', () => {
+    const { ctx, promptSections, sections } = wiringCtx();
+    apply(ctx, {});
+    assert.notEqual(promptSections[0].text(), '', 'on by default, because the failure was silence');
+
+    // A settings document edited from the page arrives as a new resolved
+    // source, which is what the tools already read through.
+    sections[0].hooks.setSource(() => ({ announceCapability: false }));
+    assert.equal(promptSections[0].text(), '', 'switched off with no re-registration');
+    sections[0].hooks.setSource(() => ({ announceCapability: true }));
+    assert.notEqual(promptSections[0].text(), '', 'and back on the same way');
+  });
+});
+
+await test('a host with no attachments gets no line, because it has no tool', async () => {
+  // Advertising a call that would return nothing is worse than silence: the
+  // model would plan around a capability this deployment does not have.
+  await onPlatform('darwin', () => {
+    const { ctx, promptSections, registered } = wiringCtx({ absent: ['attachments'] });
+    apply(ctx, {});
+    assert.deepEqual(registered, ['screen_permission'], 'no attachment store, so no capture tool');
+    assert.equal(promptSections.length, 0, 'nothing to announce, so nothing announced');
+  });
+});
+
+await test('the line is not announced when the tool could not mount', async () => {
+  // The collision case, seen from the prompt side: a second screenshot plugin
+  // owns the name, so this one has no tool to describe.
+  await onPlatform('darwin', () => {
+    const { ctx, promptSections, errors } = wiringCtx({ collisions: new Set(['screenshot']) });
+    assert.doesNotThrow(() => apply(ctx, {}));
+    assert.equal(promptSections.length, 0);
+    assert.equal(errors.length, 1, 'the failure is still reported');
+  });
+});
+
+await test('a prompt-section collision is reported without taking the host down', async () => {
+  // Two copies of this plugin mounted, or a future harness that reserves the
+  // name: the section throws on a duplicate, and a thrown apply aborts the
+  // whole boot. The tools still mount and the failure is still reported.
+  await onPlatform('darwin', () => {
+    const { ctx, registered, errors, promptSections, registeredSkills } = wiringCtx({
+      sectionCollision: 'tool:screen-eye',
+    });
+    assert.doesNotThrow(() => apply(ctx, {}));
+    assert.deepEqual(registered.sort(), ['screen_permission', 'screenshot'], 'the tools still mount');
+    assert.equal(promptSections.length, 0);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /prompt section is unavailable/u);
+    assert.match(errors[0], /already registered/u);
+    assert.equal(registeredSkills.length, 1, 'and the skill is a separate registration, so it still lands');
+  });
+});
+
+await test('the skill repeats the workflow for a reader who arrives through the catalog', async () => {
+  await onPlatform('darwin', () => {
+    const { ctx, registeredSkills } = wiringCtx();
+    apply(ctx, {});
+    assert.equal(registeredSkills.length, 1, 'registered at runtime, so installing the plugin is the installation');
+    const [skill] = registeredSkills;
+    assert.equal(skill.name, 'screen-eye');
+    assert.equal(skill.source, 'runtime');
+    assert.match(skill.description, /screen/u);
+    assert.match(skill.whenToUse, /before/iu, 'a routing hint, because the catalog shows this and not the body');
+    // What the skill adds over the standing line: the mode table, the scaled
+    // display, and the way out when nothing comes back.
+    assert.match(skill.content, /two passes/u);
+    assert.match(skill.content, /one image pixel per screen pixel/u);
+    assert.match(skill.content, /screen_permission/u);
+    assert.match(skill.content, /wait_for_change/u);
+    assert.match(skill.content, /read_image/u, 'and where the boundary with reading a file sits');
+    assert.doesNotMatch(skill.content, /you must|always|never/iu, 'reference, not orders');
+  });
+});
+
+await test('a host with no skill registry still gets its tools and its line', async () => {
+  // The registry is part of the base composition but not of every deployment:
+  // an SDK mount can leave it out, and the section is the half that matters.
+  await onPlatform('darwin', () => {
+    const { ctx, registered, promptSections, errors, warnings } = wiringCtx({ absent: ['skills'] });
+    assert.doesNotThrow(() => apply(ctx, {}));
+    assert.deepEqual(registered.sort(), ['screen_permission', 'screenshot']);
+    assert.equal(promptSections.length, 1);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(warnings, [], 'an absent registry is not worth a warning');
+  });
+});
+
+await test('a skill-name collision is a warning, never a failed mount', async () => {
+  // A project skill of the same name legitimately outranks a runtime one, and
+  // the registry logs and moves on. Nothing about it may reach `apply`.
+  await onPlatform('darwin', () => {
+    const { ctx, registered, registeredSkills, errors, warnings } = wiringCtx({ skillCollision: 'screen-eye' });
+    assert.doesNotThrow(() => apply(ctx, {}));
+    assert.deepEqual(registered.sort(), ['screen_permission', 'screenshot']);
+    assert.equal(registeredSkills.length, 0);
+    assert.deepEqual(errors, [], 'a taken skill name is not a mount failure');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /skill could not be registered/u);
+  });
+});
+
+await test('switching the announcement off at mount leaves the tools alone', async () => {
+  await onPlatform('darwin', () => {
+    const { ctx, registered, promptSections, registeredSkills } = wiringCtx();
+    apply(ctx, { announceCapability: false });
+    assert.deepEqual(registered.sort(), ['screen_permission', 'screenshot'], 'the tools are unaffected');
+    assert.equal(promptSections[0].text(), '', 'and the line is empty rather than absent');
+    assert.equal(registeredSkills.length, 0, 'a skill cannot be walked back, so it is decided once');
   });
 });
 
@@ -3603,14 +3840,17 @@ await test('the page renders every setting, and nothing at all when unserved', (
   const inputs = findAll(view.tree, (node) => node.props['aria-label'] !== undefined);
   assert.deepEqual(
     inputs.map((node) => node.props['aria-label']),
-    ['locale', 'outputDir', 'keepRecent', 'timeoutMs', 'maxDimension', 'requireImageCapableModel', 'deleteAfterCommit'],
-    'seven settings, seven controls, in the order they are declared',
+    ['locale', 'outputDir', 'keepRecent', 'timeoutMs', 'maxDimension', 'requireImageCapableModel', 'deleteAfterCommit', 'announceCapability'],
+    'eight settings, eight controls, in the order they are declared',
   );
   // The stored value is what the control shows, in the field's own encoding.
   assert.equal(inputs[0].props.value, 'zh');
   assert.equal(inputs[2].props.value, '20');
   assert.equal(inputs[5].props.checked, true, 'a boolean renders as a checkbox');
   assert.equal(inputs[6].props.checked, false);
+  // A field whose default is on shows on until it is turned off, so an unset
+  // value in the document reads the way the plugin will behave.
+  assert.equal(inputs[7].props.checked, true, 'the announcement is on by default');
   // An overridden field is marked and offers a reset; the others do not.
   assert.equal(byClass(view.tree, 'screye-badge').length, 1);
   assert.equal(byClass(view.tree, 'screye-reset').length, 1);

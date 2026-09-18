@@ -218,6 +218,7 @@ instead — the right call for a span rather than an event.
 | `keepRecent` | `50` | How many of the newest captures to keep in `outputDir`. A capture is a few-megabyte PNG and an agent using its eyes takes many, so the directory is bounded by default. `0` keeps everything. |
 | `requireImageCapableModel` | `true` | Refuse a capture when the calling model declares no image input, instead of returning a picture it cannot see. |
 | `deleteAfterCommit` | `false` | Delete the PNG once it is committed to the attachment store. Off by default, so the returned path stays re-readable. |
+| `announceCapability` | `true` | Put a standing line in the system prompt saying the agent can look at the screen, and register the `screen-eye` skill. Off leaves the tools defined but unannounced. See [Telling the model it has eyes](#telling-the-model-it-has-eyes). |
 
 Captures are committed **without** the records that would disqualify them from
 lossless storage. On macOS that means stripping the ICC profile, EXIF and iTXt
@@ -283,6 +284,58 @@ machine with no Swift toolchain captures exactly as it always did.
 The image reaches the model through the same attachment path the built-in
 `read_image` tool uses, so the value is validated, downscaled and replayed
 exactly like any other image in the session.
+
+## Telling the model it has eyes
+
+A tool reaches a model through two channels that do not talk to each other: its
+schema, sent with every request, and a standing line in the system prompt. The
+schema answers *how do I call this* — but only for a caller that has already
+decided to look it up. Nothing reads it while the model is still choosing what
+to do, so a plugin that ships only a schema is a plugin the model has to guess
+at.
+
+That is not a theory about this plugin; it is what this plugin measured. Across
+the sixty sessions in this machine's local store, **fifty-four mention
+`screenshot` exactly once, and every one of those mentions is the same
+sentence** — the Web surface's *"the browser provides no implicit DOM, route, or
+screenshot context"*. Nine sessions ever called the tool, and six of those nine
+were sessions spent building or testing this plugin: two in this repository, four
+in temporary scratch directories on the day the first commit landed. Three
+sessions used it for their own work. Silence in the prompt, and a tool nobody
+reaches for.
+
+So the plugin registers a section, once, beside the tool it describes:
+
+> This deployment can see the screen: capture it with the screenshot tool and
+> the picture comes back in that same call, so no read_image step follows. Reach
+> for it whenever the answer is on screen rather than in a file — checking your
+> own UI work, reading a running app, a dialog, an error, or anything visual you
+> cannot read out of the workspace. A burst of frames records motion instead. A
+> capture can need Screen Recording permission; screen_permission reports
+> whether it is granted and opens the pane that grants it.
+
+Four things about that are deliberate:
+
+- **It is registered only when the tool mounted.** A deployment with no
+  attachment store registers no capture tool, and a prompt that advertised one
+  would send the model after a call that returns nothing.
+- **The last sentence is platform-asked.** Windows registers no
+  `screen_permission` and has no grant to report, so the consent sentence is not
+  there. The question goes to the engine registry, the same one `apply()` asks.
+- **The skill is the long form.** A `screen-eye` skill carries the mode table,
+  the two-pass workflow, what a scaled display means for coordinates, and what
+  to do when nothing comes back — registered at runtime, so installing the
+  plugin is the whole installation and no skill file can drift from the code
+  that describes it.
+- **`announceCapability: false` removes the line**, and the line can be switched
+  back on without a restart: its text is a provider evaluated at each assembly
+  rather than a string captured at mount. The skill registration cannot be
+  walked back once made, so that one follows the setting as it stood at mount.
+
+Keeping the tools without the standing line is a supported deployment, not a
+degraded one — it is what you want if the line ever reads wrong on your setup.
+There is no switch that unregisters the tools, because a plugin whose entire
+purpose is a tool the agent calls by itself is not improved by hiding it.
 
 ## Platform support
 

@@ -34,6 +34,29 @@ an eye on the row and the controls on the right.
 | `maxDimension` | whole number | a capture with a longer side is refused with its size named, not resized |
 | `requireImageCapableModel` | switch | refuse a capture when the calling model declares no image input |
 | `deleteAfterCommit` | switch | delete the PNG once the image is in the attachment store |
+| `announceCapability` | switch | put the standing line in the system prompt, and register the `screen-eye` skill |
+
+`announceCapability` is the one field here that is not about the capture. It
+decides whether the model is *told* it can look at the screen, and it exists
+because the plugin shipped without that and measured the cost: across sixty local
+sessions, fifty-four mention `screenshot` exactly once and always in the Web
+surface's "no implicit DOM, route, or screenshot context", while nine sessions
+ever called the tool — six of them spent building or testing this plugin. A
+schema says how to call a tool; nothing reads it while the model is still
+deciding what to do. README's
+[Telling the model it has eyes](../README.md#telling-the-model-it-has-eyes) has
+the wording and the four decisions behind it.
+
+Two details of the switch are worth knowing before flipping it:
+
+- **Turning it off leaves the tools alone.** The capability stays; only the
+  announcement goes. Nothing about capture, retention or permission changes.
+- **The line comes back without a restart; the skill does not.** The section's
+  text is evaluated at each assembly, so an edit applies to the next request.
+  A skill registration cannot be walked back once made, so whether the skill
+  exists is decided by the setting as it stood when the plugin mounted — turn it
+  off and back on, and the line returns while the skill stays gone until the
+  next mount.
 
 Two defaults are worth knowing because they are the ones a user meets first:
 
