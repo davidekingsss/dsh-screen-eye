@@ -253,23 +253,37 @@ DOM, route, or screenshot context」；而真正调用过该工具的只有 9 �
 
 所以插件会在它所描述的工具旁边注册一个 section：
 
-> This deployment can see the screen: capture it with the screenshot tool and
-> the picture comes back in that same call, so no read_image step follows. Reach
-> for it whenever the answer is on screen rather than in a file — checking your
-> own UI work, reading a running app, a dialog, an error, or anything visual you
-> cannot read out of the workspace. A burst of frames records motion instead. A
-> capture can need Screen Recording permission; screen_permission reports
-> whether it is granted and opens the pane that grants it.
+> This deployment can see the screen, and seeing is a way of finding things out
+> rather than a last resort: when the answer is on screen rather than in a file,
+> look instead of searching. Read text out of a running app's interface — a
+> window title, a field value, a dialog, a message — by observing that app,
+> whose accessibility tree hands it over as text; keep the screenshot tool for
+> visual facts with no text to read, such as layout, colour, motion, and
+> anything you are judging by eye. A window too small, collapsed, or covered to
+> answer from is a reason to expand it, scroll it, or move it back into view,
+> and then look — not a reason to go looking for the same information in
+> caches, databases, files, or APIs. The screenshot tool captures and returns
+> the picture in that same call, so no read_image step follows, and a burst of
+> frames records motion instead. A capture can need Screen Recording
+> permission; screen_permission reports whether it is granted and opens the
+> pane that grants it.
+
+开头几句路由说明不是第一版就有的，它们是第二次实测的产物。有人问「我现在在看什么视频」，
+一次会话答对了，但代价是：16 条 shell 命令翻进某个 App 的缓存数据库、2 次调 Web API，
+只为取回一个**就印在窗口标题栏里**的标题。当时的提示词从没说过「运行中的界面本身就是答案
+所在的地方」——它写的是「答案在屏幕上而不在文件里」，模型把「在屏幕上」读成了「在图片里」。
+所以现在两条通道被明确分开，第三种情况也写进去了：当**界面本身**是障碍时，改变界面是通向
+答案的一步，不是绕路。
 
 其中有四点是有意为之：
 
 - **只在工具真的挂载成功时才注册。** 没有附件存储的部署不会注册截图工具，而此时提示词
   里若宣称可以截图，只会让模型去调一个返回空的东西。
-- **最后一句是按平台问出来的。** Windows 不注册 `screen_permission`，也没有授权可报告，
+- **授权那句是按平台问出来的。** Windows 不注册 `screen_permission`，也没有授权可报告，
   所以那句授权说明在那里不存在。这个问题问的是引擎注册表，与 `apply()` 问的是同一个。
-- **技能是长版本。** `screen-eye` 技能承载模式对照表、两遍读屏流程、缩放屏对坐标意味着
-  什么，以及什么都拿不到时怎么办；它走运行时注册，所以「安装插件」就是全部安装动作，
-  也不存在一个会与描述它的代码脱节的技能文件。
+- **技能是长版本。** `screen-eye` 技能承载两条通道的分工、为什么「已经在屏幕上显示的东西」
+  不该去翻缓存、模式对照表、缩放屏对坐标意味着什么，以及什么都拿不到时怎么办；它走运行时
+  注册，所以「安装插件」就是全部安装动作，也不存在一个会与描述它的代码脱节的技能文件。
 - **`announceCapability: false` 去掉常驻说明**，而且可以改回来、无需重启：它的文本是每次
   组装时求值的 provider，不是挂载时定死的字符串。技能注册无法撤回，所以那一个以挂载时的
   设置为准。

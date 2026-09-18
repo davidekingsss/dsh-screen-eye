@@ -3399,6 +3399,31 @@ await test('the line names the tool, the one-call shape, and the consent tool', 
   });
 });
 
+await test('the line routes interface text away from the picture, and says so', async () => {
+  // The session this exists for, in one sentence: asked what video was playing,
+  // a model ran sixteen shell commands into a media app's cache database and
+  // two web API calls to recover a title printed in the window's own title bar.
+  // The old line said the answer might be "on screen rather than in a file",
+  // which the model read as "in a picture" — so the split between the two
+  // channels is now stated instead of left to inference.
+  await onPlatform('darwin', () => {
+    const { ctx, promptSections } = wiringCtx();
+    apply(ctx, {});
+    const text = promptSections[0].text();
+    assert.match(text, /observing that app/u, 'sends interface text to the accessibility tree');
+    assert.match(text, /accessibility tree/u, 'and names it plainly, because it is not obvious');
+    assert.match(text, /text to read/u, 'gives the criterion: text versus no text');
+    assert.match(text, /expand it, scroll it, or move it back into view/u,
+      'a view too small or covered is a reason to change the view');
+    assert.match(text, /caches, databases, files, or APIs/u,
+      'and it says where not to go looking instead');
+    assert.match(text, /look instead of searching/u, 'the frame is retrieval, not a last resort');
+    // Still not an order, and still no claim that capture is the only route.
+    assert.doesNotMatch(text, /\b(you must|always|never)\b/iu);
+    assert.doesNotMatch(text, /the only way/u);
+  });
+});
+
 await test('the line promises no consent tool on a platform that has none', async () => {
   // A standing line has to be true where it is registered. Windows has no
   // grant to report and registers no `screen_permission`, so a sentence
@@ -3482,6 +3507,11 @@ await test('the skill repeats the workflow for a reader who arrives through the 
     assert.equal(skill.source, 'runtime');
     assert.match(skill.description, /screen/u);
     assert.match(skill.whenToUse, /before/iu, 'a routing hint, because the catalog shows this and not the body');
+    // The routing hint names the habit it is meant to interrupt, because that
+    // is the moment of decision: a model about to grep a cache for something
+    // the user is looking at.
+    assert.match(skill.whenToUse, /caches, files, databases or APIs/u,
+      'the catalog line has to catch the model before it goes looking elsewhere');
     // What the skill adds over the standing line: the mode table, the scaled
     // display, and the way out when nothing comes back.
     assert.match(skill.content, /two passes/u);
@@ -3489,7 +3519,14 @@ await test('the skill repeats the workflow for a reader who arrives through the 
     assert.match(skill.content, /screen_permission/u);
     assert.match(skill.content, /wait_for_change/u);
     assert.match(skill.content, /read_image/u, 'and where the boundary with reading a file sits');
-    assert.doesNotMatch(skill.content, /you must|always|never/iu, 'reference, not orders');
+    // And the part the measured session needed: which channel for which fact,
+    // and what to do when the view itself is in the way.
+    assert.match(skill.content, /Accessibility tree/u, 'interface text has a channel of its own');
+    assert.match(skill.content, /the picture \*is\* the evidence/u, 'and pixels are not a failure to find text');
+    assert.match(skill.content, /change the view/u, 'expanding a window is a step, not a detour');
+    assert.match(skill.content, /was not hidden/u,
+      'the failure is named as a route problem rather than a missing fact');
+    assert.doesNotMatch(skill.content, /\b(you must|always|never)\b/iu, 'reference, not orders');
   });
 });
 

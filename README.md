@@ -306,27 +306,45 @@ reaches for.
 
 So the plugin registers a section, once, beside the tool it describes:
 
-> This deployment can see the screen: capture it with the screenshot tool and
-> the picture comes back in that same call, so no read_image step follows. Reach
-> for it whenever the answer is on screen rather than in a file — checking your
-> own UI work, reading a running app, a dialog, an error, or anything visual you
-> cannot read out of the workspace. A burst of frames records motion instead. A
-> capture can need Screen Recording permission; screen_permission reports
-> whether it is granted and opens the pane that grants it.
+> This deployment can see the screen, and seeing is a way of finding things out
+> rather than a last resort: when the answer is on screen rather than in a file,
+> look instead of searching. Read text out of a running app's interface — a
+> window title, a field value, a dialog, a message — by observing that app,
+> whose accessibility tree hands it over as text; keep the screenshot tool for
+> visual facts with no text to read, such as layout, colour, motion, and
+> anything you are judging by eye. A window too small, collapsed, or covered to
+> answer from is a reason to expand it, scroll it, or move it back into view,
+> and then look — not a reason to go looking for the same information in
+> caches, databases, files, or APIs. The screenshot tool captures and returns
+> the picture in that same call, so no read_image step follows, and a burst of
+> frames records motion instead. A capture can need Screen Recording
+> permission; screen_permission reports whether it is granted and opens the
+> pane that grants it.
 
-Four things about that are deliberate:
+The routing sentences were not in the first version, and a second measurement is
+why. Asked what video was playing, a session answered correctly and
+expensively: sixteen shell commands into a media app's cache database and two
+web API calls, to recover a title printed in the window's own title bar. Nothing
+had said that a running interface is a place where answers live — the line said
+"on screen rather than in a file", and the model read *on screen* as *in a
+picture*. So the two channels are named now, and so is the third case: when the
+view itself is the obstacle, changing the view is a step toward the answer
+rather than a detour away from it.
+
+Four things about the section are deliberate:
 
 - **It is registered only when the tool mounted.** A deployment with no
   attachment store registers no capture tool, and a prompt that advertised one
   would send the model after a call that returns nothing.
-- **The last sentence is platform-asked.** Windows registers no
-  `screen_permission` and has no grant to report, so the consent sentence is not
-  there. The question goes to the engine registry, the same one `apply()` asks.
-- **The skill is the long form.** A `screen-eye` skill carries the mode table,
-  the two-pass workflow, what a scaled display means for coordinates, and what
-  to do when nothing comes back — registered at runtime, so installing the
-  plugin is the whole installation and no skill file can drift from the code
-  that describes it.
+- **The consent sentence is platform-asked.** Windows registers no
+  `screen_permission` and has no grant to report, so that sentence is not there.
+  The question goes to the engine registry, the same one `apply()` asks.
+- **The skill is the long form.** A `screen-eye` skill carries the two-channel
+  split, why a cache is the wrong route for something already displayed, the
+  mode table, what a scaled display means for coordinates, and what to do when
+  nothing comes back — registered at runtime, so installing the plugin is the
+  whole installation and no skill file can drift from the code that describes
+  it.
 - **`announceCapability: false` removes the line**, and the line can be switched
   back on without a restart: its text is a provider evaluated at each assembly
   rather than a string captured at mount. The skill registration cannot be
