@@ -1801,7 +1801,42 @@ process.stdout.write('\nlive capture\n');
 // home is a test that leaves their data behind, and the default output
 // directory is exactly that — so it is overridden, and the directory is
 // removed again below.
+//
+// The sweep first, because the removal below only helps a run that reaches it.
+// A run killed part-way — a timeout, an interrupt, an editor stopping the task
+// — never gets there, and this suite has left five such directories behind
+// while it was being written: screenshots of the user's screen, sitting in the
+// system temporary folder with nothing left that knows they are garbage. So a
+// dead run's directory is removed by the next run rather than by nothing.
+//
+// "Dead" is read from the lock file this run's predecessor wrote, and the test
+// is the process, not the file. A lock that only asserted "a run made this"
+// would protect the interrupted run forever, which is the same leak wearing a
+// different hat — measured, not assumed: the first version of this sweep left
+// the killed run's directory exactly where it was.
+//
+// Pid reuse is possible in principle and does not matter here: the worst case
+// is a stale directory surviving one more run, which is the case this handles
+// anyway. A lock naming a process that is no longer running is a dead run.
+const STALE_LOCK = 'run.lock';
+const holds = (pid) => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+for (const entry of await readdir(tmpdir()).catch(() => [])) {
+  if (!entry.startsWith('dsh-screen-eye-test-')) continue;
+  const stale = join(tmpdir(), entry);
+  const lock = await readFile(join(stale, STALE_LOCK), 'utf8').catch(() => undefined);
+  if (lock !== undefined && holds(Number.parseInt(lock.trim(), 10))) continue;
+  await rm(stale, { recursive: true, force: true }).catch(() => {});
+}
 const liveDir = await mkdtemp(join(tmpdir(), 'dsh-screen-eye-test-'));
+await writeFile(join(liveDir, STALE_LOCK), `${process.pid}\n`);
 const liveSettings = { requireImageCapableModel: false, outputDir: liveDir };
 
 /**

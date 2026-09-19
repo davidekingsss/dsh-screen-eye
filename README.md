@@ -449,9 +449,13 @@ look fast and not be.
 That split is worth having on purpose. A killed run is not a neutral event: the
 suite creates a temporary directory for its captures and removes it at the end,
 so a run cut short at the wrong moment leaves PNGs of the user's screen behind.
-The full suite has been interrupted that way three times while this plugin was
-being written, and every one of them left a `dsh-screen-eye-test-*` directory in
-the system temporary folder.
+The full suite has been interrupted that way repeatedly while this plugin was
+being written. So `live capture` now sweeps first: it removes any
+`dsh-screen-eye-test-*` directory in the system temporary folder whose lock file
+names a process that is no longer running. The lock names a pid rather than
+merely existing, because a lock that only said "a run made this" would protect
+the interrupted run forever — which the first version of the sweep did, measured
+rather than assumed.
 
 The suite runs without a harness: the logic modules are imported directly and
 the tool definitions are exercised through a stubbed context, so it works on a
