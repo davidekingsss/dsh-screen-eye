@@ -32,7 +32,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node test/selftest.mjs"
+    "test": "node test/selftest.mjs",
+    "test:fast": "node test/fast.mjs"
   },
   "keywords": [
     "dsh",

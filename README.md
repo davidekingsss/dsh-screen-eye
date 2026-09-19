@@ -432,8 +432,26 @@ away; [`docs/windows.md`](docs/windows.md) has the measurements.
 
 ```sh
 npm install
-node test/selftest.mjs
+node test/selftest.mjs          # everything: 160 cases, minutes
+node test/fast.mjs --list       # the sections, with their case counts
+node test/fast.mjs "plugin wiring" "announcing the capability"
 ```
+
+`test/selftest.mjs` is the thing that ships and the thing to run before a
+commit. It is also minutes long, and one section is why: `live capture` takes a
+real screenshot, records a real burst and builds the Swift engine for each of
+its 24 cases. The other 136 cases are pure logic and stubs and finish in about
+six seconds, so `test/fast.mjs` runs just the sections you name — the suite's own
+cases, read at run time, with the helpers they need pulled in automatically. It
+refuses to pull in `live capture` silently, because that is the run that would
+look fast and not be.
+
+That split is worth having on purpose. A killed run is not a neutral event: the
+suite creates a temporary directory for its captures and removes it at the end,
+so a run cut short at the wrong moment leaves PNGs of the user's screen behind.
+The full suite has been interrupted that way three times while this plugin was
+being written, and every one of them left a `dsh-screen-eye-test-*` directory in
+the system temporary folder.
 
 The suite runs without a harness: the logic modules are imported directly and
 the tool definitions are exercised through a stubbed context, so it works on a
